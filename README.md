@@ -33,12 +33,6 @@
 ```bash
 sudo zypper install git git-lfs ImageMagick poppler-tools parallel python3-img2pdf
 ```
-
-*Если вы предпочитаете ставить `img2pdf` через Python pip, выполните:*
-```bash
-pip install -r requirements.txt
-```
-
 ## 💻 Настройка репозитория и установка хука
 
 ### Шаг 1. Инициализация Git LFS для PDF и исходников CAD
