@@ -1,0 +1,262 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Ограничиваем внутренний параллелизм утилит (magick, pdftoppm),
+# так как за параллельную обработку страниц отвечает GNU Parallel.
+export MAGICK_THREAD_LIMIT=1
+export OMP_NUM_THREADS=1
+
+for req_tool in git magick pdftoppm img2pdf parallel; do
+    if ! command -v "$req_tool" >/dev/null 2>&1; then
+        echo "Ошибка: утилита '$req_tool' не установлена в системе." >&2
+        echo "Для OpenSUSE выполните: sudo zypper install poppler-tools ImageMagick python3-img2pdf parallel" >&2
+        exit 1
+    fi
+done
+
+if ! git rev-parse --verify HEAD >/dev/null 2>&1; then
+    exit 0
+fi
+
+DELETED_PDFS=$(git diff --cached --name-only --diff-filter=D | grep -E '\.pdf$' | grep -v '_diff\.pdf$' || true)
+
+for DEL_FILE in $DELETED_PDFS; do
+    DIFF_FILE="${DEL_FILE%.pdf}_diff.pdf"
+    if [ -f "$DIFF_FILE" ] || git ls-tree -r HEAD --name-only | grep -qx "$DIFF_FILE"; then
+        git rm -f --ignore-unmatch "$DIFF_FILE" >/dev/null 2>&1 || rm -f "$DIFF_FILE"
+    fi
+done
+
+STAGED_PDFS=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.pdf$' | grep -v '_diff\.pdf$' || true)
+
+if [ -z "$STAGED_PDFS" ]; then
+    exit 0
+fi
+
+TMP_ROOT=$(mktemp -d)
+
+# ВРЕМЕННО: сохраняем папку для отладки. Верните обычный trap после отладки.
+# trap 'rm -rf "$TMP_ROOT"' EXIT
+trap 'echo "DEBUG DIR: $TMP_ROOT"' EXIT
+
+DPI=300
+
+get_pdf_content() {
+    local rev_spec="$1"
+    local file_path="$2"
+    local out_file="$3"
+
+    git cat-file --filters --path="$file_path" "$rev_spec" > "$out_file" 2>/dev/null || \
+    git show "$rev_spec" > "$out_file"
+
+    if head -n 2 "$out_file" | grep -q "^version https://git-lfs"; then
+        local lfs_tmp="${out_file}.lfs"
+        mv "$out_file" "$lfs_tmp"
+        git lfs smudge < "$lfs_tmp" > "$out_file"
+        rm -f "$lfs_tmp"
+    fi
+}
+
+process_page() {
+    set -euo pipefail
+
+    local OLD_PAGE="$1"
+    local NEW_PAGE="$2"
+    local OUT_PAGE="$3"
+    local TMP_DIR="$4"
+    local IDX="$5"
+
+    export MAGICK_THREAD_LIMIT=1
+    export OMP_NUM_THREADS=1
+
+    local COLOR_ADDED="#ff0000"
+    local COLOR_REMOVED="#0000ff"
+
+    # Разница яркости более 1 процента считается изменением.
+    local THRESHOLD="0.01"
+
+    # Расширение выделения на один пиксель.
+    local DILATE_KERNEL="Disk:1"
+
+    local PAGE_DIR="$TMP_DIR/page_${IDX}"
+    mkdir -p "$PAGE_DIR"
+
+    local OLD_RGB="$PAGE_DIR/old_rgb.png"
+    local NEW_RGB="$PAGE_DIR/new_rgb.png"
+    local OLD_GRAY="$PAGE_DIR/old_gray.png"
+    local NEW_GRAY="$PAGE_DIR/new_gray.png"
+    local BASE_TMP="$PAGE_DIR/base.png"
+    local ADDED_MASK="$PAGE_DIR/added_mask.png"
+    local REMOVED_MASK="$PAGE_DIR/removed_mask.png"
+    local ADDED_LAYER="$PAGE_DIR/added_layer.png"
+    local REMOVED_LAYER="$PAGE_DIR/removed_layer.png"
+
+    local OLD_W=0
+    local OLD_H=0
+    local NEW_W=0
+    local NEW_H=0
+
+    if [[ -z "$OLD_PAGE" && -z "$NEW_PAGE" ]]; then
+        echo "Ошибка: обе страницы отсутствуют." >&2
+        return 1
+    fi
+
+    if [[ -n "$OLD_PAGE" ]]; then
+        read -r OLD_W OLD_H < <(
+            magick identify -ping -format '%w %h\n' "$OLD_PAGE"
+        )
+    fi
+
+    if [[ -n "$NEW_PAGE" ]]; then
+        read -r NEW_W NEW_H < <(
+            magick identify -ping -format '%w %h\n' "$NEW_PAGE"
+        )
+    fi
+
+    local WIDTH=$(( OLD_W > NEW_W ? OLD_W : NEW_W ))
+    local HEIGHT=$(( OLD_H > NEW_H ? OLD_H : NEW_H ))
+    local SIZE="${WIDTH}x${HEIGHT}"
+
+    # Приводим страницы к одному размеру без масштабирования.
+    # Отсутствующую страницу заменяем белой.
+    if [[ -n "$OLD_PAGE" ]]; then
+        magick "$OLD_PAGE" \
+            -colorspace sRGB \
+            -background white -alpha remove -alpha off \
+            -gravity northwest -extent "$SIZE" \
+            -type TrueColor -depth 8 \
+            "PNG24:$OLD_RGB"
+    else
+        magick -size "$SIZE" xc:white \
+            -colorspace sRGB -type TrueColor \
+            "PNG24:$OLD_RGB"
+    fi
+
+    if [[ -n "$NEW_PAGE" ]]; then
+        magick "$NEW_PAGE" \
+            -colorspace sRGB \
+            -background white -alpha remove -alpha off \
+            -gravity northwest -extent "$SIZE" \
+            -type TrueColor -depth 8 \
+            "PNG24:$NEW_RGB"
+    else
+        magick -size "$SIZE" xc:white \
+            -colorspace sRGB -type TrueColor \
+            "PNG24:$NEW_RGB"
+    fi
+
+    magick "$OLD_RGB" \
+        -colorspace Gray -alpha off \
+        "$OLD_GRAY"
+
+    magick "$NEW_RGB" \
+        -colorspace Gray -alpha off \
+        "$NEW_GRAY"
+
+    # Новая страница служит подложкой.
+    # Для удалённой страницы используем старую.
+    local BASE_SOURCE="$NEW_RGB"
+    if [[ -z "$NEW_PAGE" ]]; then
+        BASE_SOURCE="$OLD_RGB"
+    fi
+
+    # Осветляем линии, сохраняя белый фон.
+    magick "$BASE_SOURCE" \
+        -colorspace Gray \
+        -colorspace sRGB -type TrueColor \
+        -fill white -colorize 55% \
+        "PNG24:$BASE_TMP"
+
+    # u = старая страница, v = новая страница.
+    # Добавление тёмного штриха уменьшает яркость.
+    magick "$OLD_GRAY" "$NEW_GRAY" \
+        -fx "u-v > $THRESHOLD ? 1 : 0" \
+        -alpha off \
+        -morphology Dilate "$DILATE_KERNEL" \
+        "$ADDED_MASK"
+
+    # Удаление тёмного штриха увеличивает яркость.
+    magick "$OLD_GRAY" "$NEW_GRAY" \
+        -fx "v-u > $THRESHOLD ? 1 : 0" \
+        -alpha off \
+        -morphology Dilate "$DILATE_KERNEL" \
+        "$REMOVED_MASK"
+
+    # Создаём цветной холст независимо от цветового пространства маски.
+    # CopyOpacity переносит яркость маски в прозрачность холста.
+    magick -size "$SIZE" "xc:$COLOR_ADDED" \
+        -colorspace sRGB -type TrueColor \
+        \( "$ADDED_MASK" -alpha off \) \
+        -compose CopyOpacity -composite \
+        -depth 8 \
+        "PNG32:$ADDED_LAYER"
+
+    magick -size "$SIZE" "xc:$COLOR_REMOVED" \
+        -colorspace sRGB -type TrueColor \
+        \( "$REMOVED_MASK" -alpha off \) \
+        -compose CopyOpacity -composite \
+        -depth 8 \
+        "PNG32:$REMOVED_LAYER"
+
+    # Цветная подложка и принудительный RGB-вывод не дают
+    # сохранить результат как изображение в оттенках серого.
+    magick "$BASE_TMP" \
+        -colorspace sRGB -type TrueColor \
+        "$ADDED_LAYER" -compose Over -composite \
+        "$REMOVED_LAYER" -compose Over -composite \
+        -background white -alpha remove -alpha off \
+        -type TrueColor -depth 8 \
+        "PNG24:$OUT_PAGE"
+}
+
+export -f process_page
+
+for PDF_FILE in $STAGED_PDFS; do
+    DIFF_PDF="${PDF_FILE%.pdf}_diff.pdf"
+
+    WORK_DIR="$TMP_ROOT/work"
+    rm -rf "$WORK_DIR"
+    mkdir -p "$WORK_DIR/old_pages" "$WORK_DIR/new_pages" "$WORK_DIR/diff_pages" "$WORK_DIR/tmp_masks"
+
+    if git ls-tree -r HEAD --name-only | grep -qx "$PDF_FILE"; then
+        get_pdf_content "HEAD:$PDF_FILE" "$PDF_FILE" "$WORK_DIR/old.pdf"
+        pdftoppm -png -r $DPI "$WORK_DIR/old.pdf" "$WORK_DIR/old_pages/p"
+    fi
+
+    get_pdf_content ":$PDF_FILE" "$PDF_FILE" "$WORK_DIR/new.pdf"
+    pdftoppm -png -r $DPI "$WORK_DIR/new.pdf" "$WORK_DIR/new_pages/p"
+
+    mapfile -t OLD_PAGES < <(find "$WORK_DIR/old_pages" -type f -name 'p-*.png' | sort -V)
+    mapfile -t NEW_PAGES < <(find "$WORK_DIR/new_pages" -type f -name 'p-*.png' | sort -V)
+
+    OLD_COUNT=${#OLD_PAGES[@]}
+    NEW_COUNT=${#NEW_PAGES[@]}
+
+    MAX_PAGES=$(( OLD_COUNT > NEW_COUNT ? OLD_COUNT : NEW_COUNT ))
+
+    if [ "$MAX_PAGES" -eq 0 ]; then
+        continue
+    fi
+
+    echo "Генерация diff для $PDF_FILE (страниц: $MAX_PAGES, было: $OLD_COUNT, стало: $NEW_COUNT)..."
+
+    for (( idx=0; idx<MAX_PAGES; idx++ )); do
+        OLD_PAGE="${OLD_PAGES[idx]:-}"
+        NEW_PAGE="${NEW_PAGES[idx]:-}"
+
+        PAD_INDEX=$(printf "%05d" "$idx")
+        OUT_PAGE="$WORK_DIR/diff_pages/diff-${PAD_INDEX}.png"
+
+        printf "%s\0%s\0%s\0%s\0%s\0" "$OLD_PAGE" "$NEW_PAGE" "$OUT_PAGE" "$WORK_DIR/tmp_masks" "$PAD_INDEX"
+    done | parallel --will-cite --null -N 5 --halt now,fail=1 process_page
+
+    mapfile -t DIFF_RESULTS < <(find "$WORK_DIR/diff_pages" -type f -name 'diff-*.png' | sort -V)
+
+    if [ ${#DIFF_RESULTS[@]} -eq "$MAX_PAGES" ]; then
+        img2pdf "${DIFF_RESULTS[@]}" -o "$DIFF_PDF"
+        git add "$DIFF_PDF"
+    else
+        echo "Ошибка: количество сформированных страниц не совпадает с ожидаемым." >&2
+        exit 1
+    fi
+done

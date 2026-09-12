@@ -1,0 +1,3 @@
+# Python-зависимость для сборки финального PDF из цветных PNG-кадров
+# Установка: pip install -r requirements.txt
+img2pdf==0.5.1
