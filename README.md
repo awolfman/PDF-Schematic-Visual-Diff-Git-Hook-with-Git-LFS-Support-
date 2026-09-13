@@ -356,3 +356,12 @@ visual-diff:
 
 - **Zero Telemetry.** The script never transmits data to external servers.
 - **NDA Compliant.** Schematics and their corresponding diff reports reside strictly within your repository ecosystem.
+
+## 👥 Authors & AI Contributors
+
+* **awolfman** — *Project Concept, Hook Logic, Bash Implementation, and Hardware CAD/EDA Integration Testing*
+
+* **DeepSeek** — *Optimization of Low-Level FX Math, Linux Package Diagnostics, and Memory Leak (RAM Spikes) Protections*
+* **Claude** — *Parallelization Strategy (GNU Parallel Infrastructure) and Anti-Aliasing Resilience Operations*
+* **ChatGPT** — *CI/CD Integration Architecture, Docker Environment Deployment, and Troubleshooting Resolution Logic*
+* **Gemini (Google AI)** — *Technical Documentation Refinement, English Localization, and Bilingual Layout Structuring*
