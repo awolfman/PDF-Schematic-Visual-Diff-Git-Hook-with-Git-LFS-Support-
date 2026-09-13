@@ -1,4 +1,4 @@
-Language / Язык: [English](README.md) | **Русский**
+Language / Язык: [Английский](README.md) | **Русский**
 
 # pdf-schematic-visual-diff
 
