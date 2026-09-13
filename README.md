@@ -1,45 +1,44 @@
+Language / Язык: [Русский](README.ru.md) | **English**
+
 # pdf-schematic-visual-diff
 
-[![GitHub license](https://shields.io)](https://github.com)
-[![GitHub stars](https://shields.io)](https://github.com)
-[![GitHub issues](https://shields.io)](https://github.com)
+An automated Git hook (`pre-commit`) for visual quality control of changes in PDF schematics and blueprints, designed specifically for hardware development repositories (CAD/EDA) with **Git LFS** support.
 
-Автоматический Git-хук (`pre-commit`) для визуального контроля изменений в PDF-схемах и чертежах, разработанный специально для репозиториев электронной разработки (CAD/EDA) с поддержкой **Git LFS**.
-
-> ⚡ **Когда отрабатывает хук:** Скрипт автоматически запускается **в момент выполнения команды `git commit`**. Он перехватывает проиндексированные (staged) PDF-файлы, на лету извлекает и разворачивает данные из хранилища Git LFS, выполняет попиксельный анализ страниц текущей версии против предыдущего коммита (`HEAD`), формирует наглядный графический отчет `[имя]_diff.pdf` и **автоматически добавляет его в этот же текущий коммит**.
+> ⚡ **When the hook triggers:** The script executes automatically **at the moment of running `git commit`**. It intercepts staged PDF files, extracts and processes data from the Git LFS storage on the fly, performs a pixel-by-pixel analysis of current page versions against the previous commit (`HEAD`), generates a clear visual report named `[name]_diff.pdf`, and **automatically appends it to the current commit**.
 
 ---
 
-## ✨ Логика цветовой маркировки чертежей
+## ✨ Blueprint Color Coding Logic
 
-Алгоритм работает на низком уровне сравнения яркости пикселей (параметр `THRESHOLD="0.01"`), что позволяет безошибочно вычислять изменения геометрии CAD-схем:
+The algorithm operates at a low level by comparing pixel brightness (using the parameter `THRESHOLD="0.01"`), which allows it to accurately detect structural changes in CAD schematics:
 
-- **Удаление компонента**: Все исчезнувшие УГО выделяются **синим цветом**.
-- **Добавление компонента или Изменение RefDes**: Выделяются **красным цветом**.
-- **Перемещение компонента**: Старое положение компонента на схеме окрашивается в **синий цвет**, новое положение — в **красный цвет**.
+- **Component Removal**: All removed symbols/components are highlighted in **blue**.
+- **Component Addition or RefDes Change**: Highlighted in **red**.
+- **Component Movement**: The old position of the component on the schematic turns **blue**, while the new position turns **red**.
 
 ---
 
-## 🚀 Особенности реализации
+## 🚀 Implementation Features
 
-- **Полная интеграция с Git LFS**: Автоматически распознает текстовые указатели LFS (LFS pointers) в истории коммитов и безопасно выполняет процедуру `smudge` в изолированном пространстве.
-- **Устойчивость к антиалиасингу**: Низкоуровневые вычисления `-fx` в связке с морфологическим расширением (`Dilate Disk:1`) улавливают микросдвиги векторных линий толщиной в 1 пиксель, предотвращая ложные пропуски изменений.
-- **Высокая скорость**: Обработка страниц распараллелена на все доступные ядра CPU через `GNU Parallel`. Внутренний параллелизм утилит при этом ограничен для защиты от утечек памяти (RAM Spikes).
+- **Full Git LFS Integration**: Automatically detects LFS text pointers in the commit history and safely performs the `smudge` procedure in an isolated workspace.
+- **Anti-Aliasing Resilience**: Low-level `-fx` mathematical calculations paired with morphological expansion (`Dilate Disk:1`) capture micro-shifts in 1-pixel thick vector lines, preventing false negatives.
+- **High Performance**: Page processing is parallelized across all available CPU cores using `GNU Parallel`. At the same time, the internal parallelism of tools is limited to protect against memory leaks (RAM Spikes).
+
 ---
 
-## 🛠 Зависимости и пакеты
+## 🛠 Dependencies and Packages
 
-Перед установкой хука убедитесь, что в вашей системе установлены следующие пакеты:
+Before installing the hook, make sure the following packages are installed on your system:
 
-| Команда в скрипте | Назначение утилиты | OpenSUSE | Debian/Ubuntu/Mint | Fedora/RHEL |
+| Script Command | Tool Purpose | OpenSUSE | Debian/Ubuntu/Mint | Fedora/RHEL |
 | :--- | :--- | :--- | :--- | :--- |
-| `git-lfs` | Извлечение тяжелых бинарных PDF из хранилища LFS | `git-lfs` | `git-lfs` | `git-lfs` |
-| `magick` | Низкоуровневая попиксельная FX-математика | `ImageMagick` | `imagemagick` | `ImageMagick` |
-| `pdftoppm` | Рендеринг страниц PDF в растровые PNG | `poppler-tools` | `poppler-utils` | `poppler-utils` |
-| `parallel` | Распределение задач по ядрам процессора | `parallel` | `parallel` | `parallel` |
-| `img2pdf` | Сборка финального PDF-отчета без пережатия | `python3-img2pdf` | `img2pdf` | `img2pdf` |
+| `git-lfs` | Extracts heavy binary PDFs from LFS storage | `git-lfs` | `git-lfs` | `git-lfs` |
+| `magick` | Low-level pixel-by-pixel FX math | `ImageMagick` | `imagemagick` | `ImageMagick` |
+| `pdftoppm` | Renders PDF pages into raster PNG images | `poppler-tools` | `poppler-utils` | `poppler-utils` |
+| `parallel` | Distributes tasks across CPU cores | `parallel` | `parallel` | `parallel` |
+| `img2pdf` | Assembles the final PDF report without re-compression | `python3-img2pdf` | `img2pdf` | `img2pdf` |
 
-### Установка по дистрибутивам
+### Installation by Distribution
 
 **OpenSUSE Tumbleweed / Leap 15.4+:**
 ```bash
@@ -62,7 +61,7 @@ sudo dnf install git git-lfs ImageMagick poppler-utils parallel img2pdf
 sudo pacman -S git git-lfs imagemagick poppler parallel img2pdf
 ```
 
-### ✅ Проверка установки
+### ✅ Installation Verification
 
 ```bash
 for tool in git magick pdftoppm img2pdf parallel; do
@@ -70,73 +69,73 @@ for tool in git magick pdftoppm img2pdf parallel; do
 done
 ```
 
-Если какая-то утилита отсутствует — вернитесь к блоку установки и поставьте её.
+If any utility is missing, return to the installation block and install it.
 
 ---
 
-## ⚠️ Важно: `magick` (IM 7) vs `convert` (IM 6)
+## ⚠️ Important: `magick` (IM 7) vs `convert` (IM 6)
 
-Скрипт использует команду **`magick`** — это интерфейс **ImageMagick 7**. В большинстве дистрибутивов через менеджер пакетов ставится **ImageMagick 6**, где та же функциональность доступна через команду **`convert`**.
+The script relies on the **`magick`** command, which is the native interface for **ImageMagick 7**. In most distributions, the package manager installs **ImageMagick 6**, where the same functionality is accessed via the **`convert`** command.
 
-### Как узнать версию
+### How to Check the Version
 
 ```bash
-magick --version    # IM 7 — команда magick есть
-convert --version   # IM 6 — команда magick может отсутствовать
+magick --version    # IM 7 — the 'magick' command is available
+convert --version   # IM 6 — the 'magick' command might be missing
 ```
 
-### Если у вас ImageMagick 6
+### If You Have ImageMagick 6
 
-**Вариант A. Установить ImageMagick 7 из репозитория** (если доступно):
+**Option A. Install ImageMagick 7 from a repository** (if available):
 
 ```bash
-# Debian/Ubuntu — из PPA
+# Debian/Ubuntu — via PPA
 sudo add-apt-repository ppa:imagemagick/ppa
 sudo apt update
 sudo apt install imagemagick
 ```
 
-**Вариант B. Установить через snap** (если snap установлен):
+**Option B. Install via snap** (if snap is installed):
 
 ```bash
 sudo snap install imagemagick
 ```
 
-**Вариант C. Подменить `magick` на `convert` в скрипте** (самый быстрый):
+**Option C. Replace `magick` with `convert` inside the script** (fastest solution):
 
 ```bash
 sed -i 's/\bmagick\b/convert/g' .git/hooks/pre-commit
-grep -c "convert" .git/hooks/pre-commit   # проверка
+grep -c "convert" .git/hooks/pre-commit   # verification
 ```
 
-Функционально команды почти идентичны — синтаксис опций совпадает, различия касаются редких случаев (SVG, работа с цветовыми профилями). Для нашей задачи — рендеринг PDF, работа с масками, композитинг — подмена должна быть безопасна.
+Functionally, these commands are almost identical: the option syntax matches, and differences only occur in rare edge cases (SVG handling, color profiles). For our tasks—PDF rendering, mask operations, and compositing—the replacement is completely safe.
 
 ---
 
-## 📦 Установка `img2pdf` через Python
+## 📦 Installing `img2pdf` via Python
 
-Если пакет `img2pdf` отсутствует в репозитории вашего дистрибутива (актуально для старых версий или нестандартных сборок), установите через `pip`:
+If the `img2pdf` package is missing from your distribution's repositories (common in older releases or custom builds), install it via `pip`:
 
-### Способ 1. Простая установка в пользовательский каталог
+### Method 1. Simple installation into the user directory
 
 ```bash
 pip install --user img2pdf
 ```
 
-### Способ 2. Виртуальное окружение (рекомендуется)
+### Method 2. Virtual Environment (Recommended)
 
 ```bash
 python3 -m venv ~/.venv-img2pdf
 ~/.venv-img2pdf/bin/pip install img2pdf
 ```
 
-Затем в скрипте `.git/hooks/pre-commit` замените вызов `img2pdf` на полный путь:
+Then, update the `img2pdf` execution command in your `.git/hooks/pre-commit` script to use the absolute path:
 
 ```bash
-sed -i 's|^\(.*\)img2pdf |\1~/.venv-img2pdf/bin/img2pdf |g' .git/hooks/pre-commit
+sed -i 's|^.*img2pdf |\1~/.venv-img2pdf/bin/img2pdf |g' .git/hooks/pre-commit
 ```
 
-### Способ 3. `pipx` (изолированная установка)
+### Method 3. `pipx` (Isolated Installation)
 
 ```bash
 pipx install img2pdf
@@ -144,88 +143,88 @@ pipx install img2pdf
 
 ---
 
-## 💻 Настройка репозитория и установка хука
+## 💻 Repository Configuration & Hook Setup
 
-### Шаг 1. Инициализация Git LFS для PDF и исходников CAD
+### Step 1. Initialize Git LFS for PDFs and CAD Sources
 
-В зависимости от используемой среды проектирования (EDA), бинарные файлы электрических схем, а также выходные PDF-документы необходимо перевести под контроль Git LFS. Выполните в корне репозитория команды для вашей CAD-системы:
+Depending on your Electronic Design Automation (EDA) environment, binary schematic files and output PDF documents must be placed under Git LFS tracking. Run the following commands in the root of your repository based on your CAD system:
 
-* **Для Cadence Allegro / OrCAD Capture:**
+* **For Cadence Allegro / OrCAD Capture:**
   ```bash
   git lfs install
   git lfs track "*.pdf" "*.dsn"
   git add .gitattributes
   ```
 
-* **Для Mentor Graphics PADS / Expedition:**
+* **For Mentor Graphics PADS / Expedition:**
   ```bash
   git lfs install
   git lfs track "*.pdf" "*.sch"
   git add .gitattributes
   ```
 
-* **Для Altium Designer:**
+* **For Altium Designer:**
   ```bash
   git lfs install
   git lfs track "*.pdf" "*.SchDoc"
   git add .gitattributes
   ```
 
-* **Для KiCad:**
+* **For KiCad:**
   ```bash
   git lfs install
   git lfs track "*.pdf" "*.kicad_sch"
   git add .gitattributes
   ```
 
-> **Примечание:** хук автоматически игнорирует файлы с суффиксом `_diff.pdf`, чтобы не перегружать LFS-сервер дубликатами отчетов.
+> **Note:** The hook automatically ignores files with the `_diff.pdf` suffix to prevent bloating the LFS server with redundant report copies.
 
-### Шаг 2. Установка pre-commit хука
+### Step 2. Install the pre-commit Hook
 
-1. Скопируйте код работающего скрипта в файл `.git/hooks/pre-commit` вашего локального репозитория.
-2. Сделайте файл исполняемым:
+1. Copy the script code into the `.git/hooks/pre-commit` file of your local repository.
+2. Make the file executable:
    ```bash
    chmod +x .git/hooks/pre-commit
    ```
 
-Теперь при каждом вызове команды `git commit` проект будет автоматически проверять PDF-файлы схемы и генерировать точные визуальные отчёты об изменениях.
+Now, every time `git commit` is executed, the project will automatically scan the schematic PDF files and generate accurate visual diff reports.
 
-### Шаг 3. Первый тестовый коммит
+### Step 3. First Test Commit
 
 ```bash
-# Внесите небольшое изменение в схему, сохраните PDF
+# Make a small change to the schematic, then save the PDF
 git add schematic.pdf
 git commit -m "Test visual diff hook"
 ```
 
-В выводе должны увидеть строки вида:
+You should see output lines similar to this:
 
 ```
-Генерация diff для schematic.pdf (страниц: 28, было: 28, стало: 28)...
+Generating diff for schematic.pdf (pages: 28, original: 28, current: 28)...
 ```
 
-После успешного коммита рядом с PDF появится файл `schematic_diff.pdf` с подсветкой изменений.
+Following a successful commit, a `schematic_diff.pdf` file with highlighted modifications will appear next to your original PDF.
 
 ---
 
-## 📁 Структура файлов после коммита
+## 📁 Post-Commit File Structure
 
 ```
 project/
-├── schematic.pdf              # сама схема (в Git LFS)
-├── schematic_diff.pdf         # визуальный diff (добавляется хуком)
+├── schematic.pdf              # The schematic itself (tracked in Git LFS)
+├── schematic_diff.pdf         # Visual diff report (automatically appended by the hook)
 └── .git/
     └── hooks/
-        └── pre-commit         # сам хук
+        └── pre-commit         # The Git hook script
 ```
 
-Если вы хотите складывать diff-файлы в отдельную папку (например, `diff/`), измените в скрипте строку:
+If you prefer to store diff reports in a separate directory (e.g., `diff/`), modify this line in the script:
 
 ```bash
 DIFF_PDF="${PDF_FILE%.pdf}_diff.pdf"
 ```
 
-на:
+Change it to:
 
 ```bash
 DIFF_PDF="$(dirname "$PDF_FILE")/diff/$(basename "${PDF_FILE%.pdf}")_diff.pdf"
@@ -238,18 +237,18 @@ mkdir -p "$(dirname "$DIFF_PDF")"
 
 ### `magick: command not found`
 
-У вас ImageMagick 6. См. раздел «Важно: `magick` vs `convert`» выше — либо установите IM 7, либо замените `magick` на `convert` в скрипте.
+You are using ImageMagick 6. Refer to the "Important: `magick` vs `convert`" section above—either upgrade to IM 7 or replace `magick` with `convert` inside the script.
 
-### `LFS pointer detected` или пустые PNG после рендеринга
+### `LFS pointer detected` or Empty PNGs After Rendering
 
-PDF в репозитории хранится как LFS-указатель, но LFS не развёрнут. Убедитесь:
+The PDF is stored as an LFS pointer in the repository, but LFS has not been fetched locally. Verify your setup:
 
 ```bash
 git lfs install
 git lfs pull
 ```
 
-В корне репозитория должен быть файл `.gitattributes` со строкой `*.pdf filter=lfs diff=lfs merge=lfs -text`.
+Ensure that your repository root contains a `.gitattributes` file with the following rule: `*.pdf filter=lfs diff=lfs merge=lfs -text`.
 
 ### `parallel: command not found`
 
@@ -268,58 +267,58 @@ sudo dnf install parallel
 chmod +x .git/hooks/pre-commit
 ```
 
-### Хук не запускается при `git commit`
+### The Hook Does Not Run on `git commit`
 
-Проверьте:
-1. Файл лежит именно в `.git/hooks/pre-commit` (не в `.git/hooks/pre-commit.sh`).
-2. Файл исполняемый (`ls -la .git/hooks/pre-commit` — должно быть `-rwxr-xr-x`).
-3. Нет флага `--no-verify` при коммите.
-4. Хук не отключён через `git config core.hooksPath`.
+Verify the following:
+1. The file is strictly named `.git/hooks/pre-commit` (not `.git/hooks/pre-commit.sh`).
+2. The file is executable (`ls -la .git/hooks/pre-commit` should display `-rwxr-xr-x`).
+3. You are not using the `--no-verify` flag during your commit.
+4. The hook path has not been overridden via `git config core.hooksPath`.
 
-### Все страницы помечены как «изменённые», хотя схема не менялась
+### All Pages Marked as "Modified" Though the Schematic Hasn't Changed
 
-Причина — **разный рендеринг poppler** между версиями PDF или смена DPI. Проверьте:
+This is caused by **differing poppler rendering behavior** between PDF versions or a change in DPI. Check your files:
 
 ```bash
 pdfinfo old.pdf | grep -E "Pages|Page size"
 pdfinfo new.pdf | grep -E "Pages|Page size"
 ```
 
-Если размеры страниц отличаются (`1684 x 2384` и `2384 x 1684`) — PDF отрендерены в разных ориентациях. В этом случае нужно нормализовать PDF перед коммитом: либо всегда печатать в одном формате (A1 landscape), либо добавить в хук предварительный поворот через `pdftk`/`qpdf`.
+If the page boundaries differ (e.g., `1684 x 2384` vs `2384 x 1684`), the PDFs were exported in different orientations. You must normalize the PDFs before committing: either consistently print using the same layout format (e.g., A1 landscape), or add a pre-rotation step to the hook using `pdftk` or `qpdf`.
 
-Если размеры совпадают, но различия всё равно «по всей странице» — попробуйте понизить чувствительность, увеличив `THRESHOLD`:
+If the page dimensions match but full-page false positives persist, try lowering the sensitivity by increasing the `THRESHOLD` value:
 
 ```bash
-THRESHOLD="0.02"   # было 0.01
+THRESHOLD="0.02"   # default was 0.01
 ```
 
-Не поднимайте выше `0.05` — начнёте пропускать реальные изменения.
+Avoid raising it past `0.05`, as it will begin to skip actual schematic changes.
 
-### Диагностика: как посмотреть промежуточные маски
+### Diagnostics: How to Inspect Intermediate Masks
 
-Установите переменную окружения перед коммитом:
+Set the following environment variable before committing:
 
 ```bash
 MSK_DEBUG=1 git commit -m "..."
 ```
 
-В конце работы скрипт выведет путь к временной папке с промежуточными PNG (маски, слои, base). Их можно открыть и посмотреть, что не так.
+Upon completion, the script will output the path to a temporary directory containing intermediate PNG assets (masks, layers, base files) for inspection.
 
-### Слишком долгий рендеринг при коммите
+### Commit Takes Too Long to Process
 
-По умолчанию `DPI=300`. На 28 страницах A1 это может давать 30–60 секунд на страницу. Понизьте DPI до 150:
+By default, the script renders at `DPI=300`. For a 28-page A1 layout, this can take 30–60 seconds per page. Lower the resolution to 150 DPI:
 
 ```bash
 DPI=150
 ```
 
-Для подсветки RefDes и компонентов этого достаточно.
+This resolution remains fully sufficient for tracking components and Reference Designators (RefDes).
 
 ---
 
-## 🐳 Использование в CI/Docker
+## 🐳 CI/Docker Integration
 
-Если хук запускается в CI-среде, можно использовать готовый Docker-образ:
+If you run this hook inside a CI/CD environment, you can utilize a pre-built Docker image configuration:
 
 ```dockerfile
 FROM python:3.12-slim
@@ -330,11 +329,11 @@ RUN apt-get update && apt-get install -y \
 
 RUN pip install img2pdf
 
-# Заменяем magick на convert для IM 6
+# Substitute magick with convert for ImageMagick 6 environments
 RUN sed -i 's/\bmagick\b/convert/g' /usr/local/bin/pre-commit-hook
 ```
 
-Пример GitLab CI:
+Example GitLab CI workflow configuration:
 
 ```yaml
 stages:
@@ -353,8 +352,7 @@ visual-diff:
 
 ---
 
-## 🔒 Безопасность и приватность
+## 🔒 Security and Privacy
 
-- **Никакой телеметрии.** Скрипт не отправляет данные ни на какие серверы.
-- **Совместимо с NDA.** Схемы и их diff-отчёты остаются в вашем репозитории и никуда не утекают.
----
+- **Zero Telemetry.** The script never transmits data to external servers.
+- **NDA Compliant.** Schematics and their corresponding diff reports reside strictly within your repository ecosystem.
