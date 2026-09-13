@@ -294,6 +294,11 @@ THRESHOLD="0.02"   # default was 0.01
 
 Avoid raising it past `0.05`, as it will begin to skip actual schematic changes.
 
+> 💡 **Important when using Virtual Printers (doPDF, CUPS-PDF, etc.):**
+> Different printer drivers handle embedded typography differently (especially specialized CAD fonts), which directly impacts pixel-by-pixel comparisons:
+> * **When exporting via doPDF (Windows):** You **must check the "Embed fonts" option** in the printer properties before generating the document. If fonts are omitted, the Linux `pdftoppm` utility will fall back to standard fonts (like Arial), causing slight character shifts and triggering full-page false positives.
+> * **When exporting via CUPS-PDF (Linux):** This driver typically converts all text blocks directly into vector curves (graphical paths). For a visual diff tool, this is the **ideal scenario** because letter shapes are frozen as geometry, removing any dependency on local system font packages.
+
 ### Diagnostics: How to Inspect Intermediate Masks
 
 Set the following environment variable before committing:
