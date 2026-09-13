@@ -1,4 +1,8 @@
-# PDF Schematic Visual Diff Git Hook (with Git LFS Support)
+# pdf-schematic-visual-diff
+
+[![GitHub license](https://shields.io)](https://github.com)
+[![GitHub stars](https://shields.io)](https://github.com)
+[![GitHub issues](https://shields.io)](https://github.com)
 
 Автоматический Git-хук (`pre-commit`) для визуального контроля изменений в PDF-схемах и чертежах, разработанный специально для репозиториев электронной разработки (CAD/EDA) с поддержкой **Git LFS**.
 
