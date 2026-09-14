@@ -10,7 +10,7 @@ Language / Язык: [Английский](README.md) | **Русский**
 
 ## ✨ Логика цветовой маркировки чертежей
 
-Алгоритм работает на низком уровне сравнения яркости пикселей (параметр `THRESHOLD="0.01"`), что позволяет безошибочно вычислять изменения геометрии CAD-схем:
+Алгоритм работает на низком уровне поканального векторного вычитания яркости пикселей (`-compose MinusSrc`), что позволяет безошибочно вычислять изменения геометрии CAD-схем с учётом заданного порога чувствительности:
 
 - **Удаление компонента**: Все исчезнувшие УГО выделяются **синим цветом**.
 - **Добавление компонента или Изменение RefDes**: Выделяются **красным цветом**.
@@ -21,8 +21,44 @@ Language / Язык: [Английский](README.md) | **Русский**
 ## 🚀 Особенности реализации
 
 - **Полная интеграция с Git LFS**: Автоматически распознает текстовые указатели LFS (LFS pointers) в истории коммитов и безопасно выполняет процедуру `smudge` в изолированном пространстве.
-- **Устойчивость к антиалиасингу**: Низкоуровневые вычисления `-fx` в связке с морфологическим расширением (`Dilate Disk:1`) улавливают микросдвиги векторных линий толщиной в 1 пиксель, предотвращая ложные пропуски изменений.
-- **Высокая скорость**: Обработка страниц распараллелена на все доступные ядра CPU через `GNU Parallel`. Внутренний параллелизм утилит при этом ограничен для защиты от утечек памяти (RAM Spikes).
+- **Устойчивость к антиалиасингу**: Скоростные матричные операции ImageMagick в связке с морфологическим расширением (`Dilate Disk:1`) улавливают микросдвиги векторных линий толщиной в 1 пиксель, предотвращая ложные пропуски изменений.
+- **Максимальное распараллеливание**: Процесс рендеринга страниц полностью разделен на независимые легковесные потоки через `pdftocairo` и распределен по всем ядрам CPU с помощью `GNU Parallel`, исключая перегрузку планировщика потоков.
+
+---
+
+## 🔧 Настройка ресурсных ограничений ImageMagick
+
+Для обработки крупных инженерных документов (чертежи формата А1, А0 при разрешении 300 DPI) стандартных лимитов безопасности ImageMagick в системе часто не хватает. Это приводит к ошибкам `Image width exceeds user limit` или жесткому падению скорости из-за кэширования графики на жесткий диск.
+
+### Рекомендуемый профиль политик безопасности
+
+Внесите изменения в конфигурационный файл политик ImageMagick (обычно расположен по пути `/etc/ImageMagick-7/policy.xml` или `/etc/ImageMagick-6/policy.xml`).
+
+Добавьте или замените существующие директивы внутри тегов `<policymap>` перед закрывающим тегом `</policymap>` следующие строки:
+
+```xml
+<policymap>
+  <!-- Максимальные линейные размеры растра одной страницы (16384 x 16384 пикселей) -->
+  <policy domain="resource" name="width" value="16KP"/>
+  <policy domain="resource" name="height" value="16KP"/>
+  
+  <!-- Максимальная общая площадь кадра в мегапикселях (128 MP) -->
+  <policy domain="resource" name="area" value="128MP"/>
+  
+  <!-- Ограничения на выделение физической оперативной памяти и маппинга памяти -->
+  <policy domain="resource" name="memory" value="2GiB"/>
+  <policy domain="resource" name="map" value="4GiB"/>
+  
+  <!-- Лимит временного дискового пространства при заполнении выделенной RAM -->
+  <policy domain="resource" name="disk" value="8GiB"/>
+  
+  <!-- Потолок времени выполнения одной команды ImageMagick в секундах (10 минут) -->
+  <policy domain="resource" name="time" value="600"/>
+</policymap>
+```
+
+> 📌 **Примечание:** Несмотря на то, что сам скрипт хука пытается динамически переопределять и изолировать данные ресурсные лимиты «на лету» для своих подпроцессов, ручная правка глобального файла `policy.xml` гарантирует корректное поведение утилит при ручной отладке отдельных страниц.
+
 ---
 
 ## 🛠 Зависимости и пакеты
@@ -32,112 +68,46 @@ Language / Язык: [Английский](README.md) | **Русский**
 | Команда в скрипте | Назначение утилиты | OpenSUSE | Debian/Ubuntu/Mint | Fedora/RHEL |
 | :--- | :--- | :--- | :--- | :--- |
 | `git-lfs` | Извлечение тяжелых бинарных PDF из хранилища LFS | `git-lfs` | `git-lfs` | `git-lfs` |
-| `magick` | Низкоуровневая попиксельная FX-математика | `ImageMagick` | `imagemagick` | `ImageMagick` |
-| `pdftoppm` | Рендеринг страниц PDF в растровые PNG | `poppler-tools` | `poppler-utils` | `poppler-utils` |
-| `parallel` | Распределение задач по ядрам процессора | `parallel` | `parallel` | `parallel` |
-| `img2pdf` | Сборка финального PDF-отчета без пережатия | `python3-img2pdf` | `img2pdf` | `img2pdf` |
+| `magick` | Высокопроизводительные матричные операции над слоями | `ImageMagick` | `imagemagick` | `ImageMagick` |
+| `pdftocairo` | Рендеринг векторов PDF в четкую растровую графику PNG | `poppler-tools` | `poppler-utils` | `poppler-utils` |
+| `parallel` | Распределение пакетной обработки страниц по ядрам CPU | `parallel` | `parallel` | `parallel` |
+| `qpdf` | Скоростная недеструктивная склейка оригинальных страниц PDF | `qpdf` | `qpdf` | `qpdf` |
+| `img2pdf` | Сборка растровых слоев изменений без пережатия | `python3-img2pdf` | `img2pdf` | `img2pdf` |
 
 ### Установка по дистрибутивам
 
 **OpenSUSE Tumbleweed / Leap 15.4+:**
 ```bash
-sudo zypper install git git-lfs ImageMagick poppler-tools parallel python3-img2pdf
+sudo zypper install git git-lfs ImageMagick poppler-tools parallel qpdf python3-img2pdf
 ```
 
 **Debian 11+ / Ubuntu 22.04+ / Linux Mint 21+:**
 ```bash
 sudo apt update
-sudo apt install git git-lfs imagemagick poppler-utils parallel img2pdf
+sudo apt install git git-lfs imagemagick poppler-utils parallel qpdf img2pdf
 ```
 
 **Fedora 38+ / RHEL 9+ / AlmaLinux 9+:**
 ```bash
-sudo dnf install git git-lfs ImageMagick poppler-utils parallel img2pdf
-```
-
-**Arch Linux / Manjaro:**
-```bash
-sudo pacman -S git git-lfs imagemagick poppler parallel img2pdf
+sudo dnf install git git-lfs ImageMagick poppler-utils parallel qpdf img2pdf
 ```
 
 ### ✅ Проверка установки
 
 ```bash
-for tool in git magick pdftoppm img2pdf parallel; do
-    command -v "$tool" >/dev/null 2>&1 && echo "OK: $tool" || echo "MISSING: $tool"
+for tool in git magick pdftocairo img2pdf parallel qpdf; do
+    command -v "\$tool" >/dev/null 2>&1 && echo "OK: tool" || echo "MISSING: tool"
 done
 ```
-
-Если какая-то утилита отсутствует — вернитесь к блоку установки и поставьте её.
 
 ---
 
 ## ⚠️ Важно: `magick` (IM 7) vs `convert` (IM 6)
 
-Скрипт использует команду **`magick`** — это интерфейс **ImageMagick 7**. В большинстве дистрибутивов через менеджер пакетов ставится **ImageMagick 6**, где та же функциональность доступна через команду **`convert`**.
-
-### Как узнать версию
-
-```bash
-magick --version    # IM 7 — команда magick есть
-convert --version   # IM 6 — команда magick может отсутствовать
-```
-
-### Если у вас ImageMagick 6
-
-**Вариант A. Установить ImageMagick 7 из репозитория** (если доступно):
-
-```bash
-# Debian/Ubuntu — из PPA
-sudo add-apt-repository ppa:imagemagick/ppa
-sudo apt update
-sudo apt install imagemagick
-```
-
-**Вариант B. Установить через snap** (если snap установлен):
-
-```bash
-sudo snap install imagemagick
-```
-
-**Вариант C. Подменить `magick` на `convert` в скрипте** (самый быстрый):
+Скрипт по умолчанию ориентирован на команду **`magick`** (интерфейс ImageMagick 7). Если в вашем дистрибутиве установлен ImageMagick 6, подмените вызовы прямо перед установкой хука:
 
 ```bash
 sed -i 's/\bmagick\b/convert/g' .git/hooks/pre-commit
-grep -c "convert" .git/hooks/pre-commit   # проверка
-```
-
-Функционально команды почти идентичны — синтаксис опций совпадает, различия касаются редких случаев (SVG, работа с цветовыми профилями). Для нашей задачи — рендеринг PDF, работа с масками, композитинг — подмена должна быть безопасна.
-
----
-
-## 📦 Установка `img2pdf` через Python
-
-Если пакет `img2pdf` отсутствует в репозитории вашего дистрибутива (актуально для старых версий или нестандартных сборок), установите через `pip`:
-
-### Способ 1. Простая установка в пользовательский каталог
-
-```bash
-pip install --user img2pdf
-```
-
-### Способ 2. Виртуальное окружение (рекомендуется)
-
-```bash
-python3 -m venv ~/.venv-img2pdf
-~/.venv-img2pdf/bin/pip install img2pdf
-```
-
-Затем в скрипте `.git/hooks/pre-commit` замените вызов `img2pdf` на полный путь:
-
-```bash
-sed -i 's|^\(.*\)img2pdf |\1~/.venv-img2pdf/bin/img2pdf |g' .git/hooks/pre-commit
-```
-
-### Способ 3. `pipx` (изолированная установка)
-
-```bash
-pipx install img2pdf
 ```
 
 ---
@@ -146,175 +116,41 @@ pipx install img2pdf
 
 ### Шаг 1. Инициализация Git LFS для PDF и исходников CAD
 
-В зависимости от используемой среды проектирования (EDA), бинарные файлы электрических схем, а также выходные PDF-документы необходимо перевести под контроль Git LFS. Выполните в корне репозитория команды для вашей CAD-системы:
+Выполните в корне репозитория команды отслеживания в зависимости от вашей CAD-системы:
 
-* **Для Cadence Allegro / OrCAD Capture:**
-  ```bash
-  git lfs install
-  git lfs track "*.pdf" "*.dsn"
-  git add .gitattributes
-  ```
-
-* **Для Mentor Graphics PADS / Expedition:**
-  ```bash
-  git lfs install
-  git lfs track "*.pdf" "*.sch"
-  git add .gitattributes
-  ```
-
-* **Для Altium Designer:**
-  ```bash
-  git lfs install
-  git lfs track "*.pdf" "*.SchDoc"
-  git add .gitattributes
-  ```
-
-* **Для KiCad:**
-  ```bash
-  git lfs install
-  git lfs track "*.pdf" "*.kicad_sch"
-  git add .gitattributes
-  ```
-
-> **Примечание:** хук автоматически игнорирует файлы с суффиксом `_diff.pdf`, чтобы не перегружать LFS-сервер дубликатами отчетов.
-
-### Шаг 2. Установка pre-commit хука
-
-1. Скопируйте код работающего скрипта в файл `.git/hooks/pre-commit` вашего локального репозитория.
-2. Сделайте файл исполняемым:
-   ```bash
-   chmod +x .git/hooks/pre-commit
-   ```
-
-Теперь при каждом вызове команды `git commit` проект будет автоматически проверять PDF-файлы схемы и генерировать точные визуальные отчёты об изменениях.
-
-### Шаг 3. Первый тестовый коммит
-
-```bash
-# Внесите небольшое изменение в схему, сохраните PDF
-git add schematic.pdf
-git commit -m "Test visual diff hook"
-```
-
-В выводе должны увидеть строки вида:
-
-```
-Генерация diff для schematic.pdf (страниц: 28, было: 28, стало: 28)...
-```
-
-После успешного коммита рядом с PDF появится файл `schematic_diff.pdf` с подсветкой изменений.
+* **Для Cadence Allegro / OrCAD Capture:** `git lfs track "*.pdf" "*.dsn"`
+* **Для Altium Designer:** `git lfs track "*.pdf" "*.SchDoc"`
+* **Для KiCad:** `git lfs track "*.pdf" "*.kicad_sch"`
 
 ---
 
-## 📁 Структура файлов после коммита
-
-```
-project/
-├── schematic.pdf              # сама схема (в Git LFS)
-├── schematic_diff.pdf         # визуальный diff (добавляется хуком)
-└── .git/
-    └── hooks/
-        └── pre-commit         # сам хук
-```
-
-Если вы хотите складывать diff-файлы в отдельную папку (например, `diff/`), измените в скрипте строку:
-
-```bash
-DIFF_PDF="${PDF_FILE%.pdf}_diff.pdf"
-```
-
-на:
-
-```bash
-DIFF_PDF="$(dirname "$PDF_FILE")/diff/$(basename "${PDF_FILE%.pdf}")_diff.pdf"
-mkdir -p "$(dirname "$DIFF_PDF")"
-```
-
----
-
-## 🔧 Troubleshooting
-
-### `magick: command not found`
-
-У вас ImageMagick 6. См. раздел «Важно: `magick` vs `convert`» выше — либо установите IM 7, либо замените `magick` на `convert` в скрипте.
-
-### `LFS pointer detected` или пустые PNG после рендеринга
-
-PDF в репозитории хранится как LFS-указатель, но LFS не развёрнут. Убедитесь:
-
-```bash
-git lfs install
-git lfs pull
-```
-
-В корне репозитория должен быть файл `.gitattributes` со строкой `*.pdf filter=lfs diff=lfs merge=lfs -text`.
-
-### `parallel: command not found`
-
-```bash
-# OpenSUSE
-sudo zypper install parallel
-# Debian/Ubuntu/Mint
-sudo apt install parallel
-# Fedora
-sudo dnf install parallel
-```
-
-### `Permission denied: .git/hooks/pre-commit`
-
-```bash
-chmod +x .git/hooks/pre-commit
-```
-
-### Хук не запускается при `git commit`
-
-Проверьте:
-1. Файл лежит именно в `.git/hooks/pre-commit` (не в `.git/hooks/pre-commit.sh`).
-2. Файл исполняемый (`ls -la .git/hooks/pre-commit` — должно быть `-rwxr-xr-x`).
-3. Нет флага `--no-verify` при коммите.
-4. Хук не отключён через `git config core.hooksPath`.
+## 🔧 Устранение неисправностей (Troubleshooting)
 
 ### Все страницы помечены как «изменённые», хотя схема не менялась
 
-Причина — **разный рендеринг poppler** между версиями PDF или смена DPI. Проверьте:
-
+Причина — **разный рендеринг шрифтов или геометрии poppler** между версиями PDF. Проверить базовые параметры можно через `pdfinfo`:
 ```bash
 pdfinfo old.pdf | grep -E "Pages|Page size"
-pdfinfo new.pdf | grep -E "Pages|Page size"
 ```
 
-Если размеры страниц отличаются (`1684 x 2384` и `2384 x 1684`) — PDF отрендерены в разных ориентациях. В этом случае нужно нормализовать PDF перед коммитом: либо всегда печатать в одном формате (A1 landscape), либо добавить в хук предварительный поворот через `pdftk`/`qpdf`.
-
-Если размеры совпадают, но различия всё равно «по всей странице» — попробуйте понизить чувствительность, увеличив `THRESHOLD`:
-
+Если размеры совпадают, но различия всё равно детектируются «по всей площади листа» — попробуйте снизить чувствительность, передав переменную `PDF_DIFF_THRESHOLD` перед вызовом коммита:
 ```bash
-THRESHOLD="0.02"   # было 0.01
+export PDF_DIFF_THRESHOLD="2%"
+git commit -m "Commit text"
 ```
-
-Не поднимайте выше `0.05` — начнёте пропускать реальные изменения.
 
 > 💡 **Важно при использовании виртуальных принтеров (doPDF, CUPS-PDF и др.):**
-> Разные принтеры по-разному работают со шрифтами (особенно с ГОСТ-шрифтами), что напрямую влияет на попиксельное сравнение:
-> * **при использовании doPDF (Windows):** В настройках принтера перед печатью **обязательно ставьте галочку «Внедрить шрифты»**. Без этого шрифт не запишется внутрь файла, Linux-утилита `pdftoppm` подменит его стандартным Arial, и текст на схеме «поедет», вызвав ложные срабатывания по всей странице.
-> * **при использовании CUPS-PDF (Linux):** Этот принтер часто намертво переводит весь текст в векторные кривые (графические линии). Для визуального diff-хука это **идеальный сценарий**, так как рендеринг геометрии букв становится абсолютно независимым от системных шрифтов.
-
-
-### Диагностика: как посмотреть промежуточные маски
-
-Установите переменную окружения перед коммитом:
-
-```bash
-MSK_DEBUG=1 git commit -m "..."
-```
-
-В конце работы скрипт выведет путь к временной папке с промежуточными PNG (маски, слои, base). Их можно открыть и посмотреть, что не так.
+> Разные принтеры по-разному работают со шрифтами (особенно со специализированными ГОСТ/CAD-шрифтами), что напрямую влияет на попиксельное сравнение:
+> * **при использовании doPDF (Windows):** В настройках принтера перед печатью **обязательно ставьте галочку «Внедрить шрифты»**. Без этого Linux-утилита `pdftocairo` подменит шрифт на стандартный Arial, текст на схеме незначительно сместится и вызовет ложные срабатывания по всей странице.
+> * **при использовании CUPS-PDF (Linux):** Данный принтер намертво переводит весь текст в векторные кривые (графические линии). Для визуального diff-хука это **идеальный сценарий**, так как рендеринг геометрии букв становится абсолютно независимым от наличия локальных шрифтовых пакетов.
 
 ### Слишком долгий рендеринг при коммите
 
-По умолчанию `DPI=300`. На 28 страницах A1 это может давать 30–60 секунд на страницу. Понизьте DPI до 150:
-
+По умолчанию сравнение идет при `DPI=300`. На многолистовых чертежах А1 расчет может затягиваться. Снизьте DPI сравнения до 150 или 200 единиц:
 ```bash
-DPI=150
+export PDF_DIFF_DPI=150
+export PDF_DIFF_OUTPUT_DPI=150
+git commit -m "Fast diff calculation"
 ```
 
 Для подсветки RefDes и компонентов этого достаточно.
