@@ -1,59 +1,252 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Ограничиваем внутренний параллелизм утилит (magick, pdftoppm),
-# так как за параллельную обработку страниц отвечает GNU Parallel.
+# Разрешение сравнения и растровых страниц результата.
+DPI="${PDF_DIFF_DPI:-300}"
+OUTPUT_DPI="${PDF_DIFF_OUTPUT_DPI:-300}"
+
+# Одновременная обработка страниц.
+JOBS="${PDF_DIFF_JOBS:-3}"
+
+# Одновременная растеризация старого и нового PDF.
+# Допустимые значения 1 и 2.
+RENDER_JOBS="${PDF_DIFF_RENDER_JOBS:-2}"
+
+# Порог различий, расширение выделения и PNG-сжатие.
+DIFF_THRESHOLD="${PDF_DIFF_THRESHOLD:-1%}"
+DILATE_KERNEL="${PDF_DIFF_DILATE:-Disk:1}"
+PNG_LEVEL="${PDF_DIFF_PNG_LEVEL:-9}"
+
 export MAGICK_THREAD_LIMIT=1
 export OMP_NUM_THREADS=1
 
-for req_tool in git magick pdftoppm img2pdf parallel; do
-    if ! command -v "$req_tool" >/dev/null 2>&1; then
-        echo "Ошибка: утилита '$req_tool' не установлена в системе." >&2
-        echo "Для OpenSUSE выполните: sudo zypper install poppler-tools ImageMagick python3-img2pdf gnu_parallel" >&2
-        exit 1
-    fi
+log() {
+    printf '[PDF diff] %s\n' "$*"
+}
+
+die() {
+    printf '[PDF diff] Ошибка: %s\n' "$*" >&2
+    exit 1
+}
+
+for req_tool in \
+    bash git magick pdftocairo img2pdf parallel qpdf \
+    cmp mktemp find sort awk sleep
+do
+    command -v "$req_tool" >/dev/null 2>&1 ||
+        die "Не установлена утилита $req_tool"
 done
 
-if ! git rev-parse --verify HEAD >/dev/null 2>&1; then
-    exit 0
+[[ "$DPI" =~ ^[1-9][0-9]*$ ]] ||
+    die "PDF_DIFF_DPI должен быть положительным целым числом."
+
+[[ "$OUTPUT_DPI" =~ ^[1-9][0-9]*$ ]] ||
+    die "PDF_DIFF_OUTPUT_DPI должен быть положительным целым числом."
+
+(( OUTPUT_DPI <= DPI )) ||
+    die "Выходной DPI не должен превышать DPI сравнения."
+
+[[ "$JOBS" =~ ^[1-9][0-9]*$ ]] ||
+    die "PDF_DIFF_JOBS должен быть положительным целым числом."
+
+[[ "$RENDER_JOBS" == "1" || "$RENDER_JOBS" == "2" ]] ||
+    die "PDF_DIFF_RENDER_JOBS должен быть равен 1 или 2."
+
+[[ "$PNG_LEVEL" =~ ^[0-9]$ ]] ||
+    die "PDF_DIFF_PNG_LEVEL должен быть целым числом от 0 до 9."
+
+RESIZE_PERCENT="$(
+    LC_ALL=C awk \
+        -v target="$OUTPUT_DPI" \
+        -v source="$DPI" \
+        'BEGIN { printf "%.10f", 100 * target / source }'
+)"
+
+export PARALLEL_SHELL
+PARALLEL_SHELL="$(command -v bash)"
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+# Не интерпретируем специальные символы путей как шаблоны Git.
+export GIT_LITERAL_PATHSPECS=1
+
+HAS_HEAD=0
+if git rev-parse --verify HEAD >/dev/null 2>&1; then
+    HAS_HEAD=1
 fi
 
-DELETED_PDFS=$(git diff --cached --name-only --diff-filter=D | grep -E '\.pdf$' | grep -v '_diff\.pdf$' || true)
+TMP_PARENT="${PDF_DIFF_TMPDIR:-${TMPDIR:-/tmp}}"
 
-for DEL_FILE in $DELETED_PDFS; do
+[[ -d "$TMP_PARENT" ]] ||
+    die "Временный каталог не существует: $TMP_PARENT"
+
+TMP_ROOT="$(mktemp -d "$TMP_PARENT/pdf-diff.XXXXXXXX")"
+TMP_ROOT="$(cd "$TMP_ROOT" && pwd -P)"
+
+RENDER_PIDS=()
+HEARTBEAT_PID=""
+
+# Периодическое сообщение для продолжительных этапов.
+start_heartbeat() {
+    local message="$1"
+
+    (
+        sleeper=""
+
+        stop_heartbeat_worker() {
+            trap - TERM INT
+
+            if [[ -n "$sleeper" ]]; then
+                kill "$sleeper" 2>/dev/null || true
+                wait "$sleeper" 2>/dev/null || true
+            fi
+
+            exit 0
+        }
+
+        trap stop_heartbeat_worker TERM INT
+
+        while true; do
+            sleep 15 &
+            sleeper=$!
+            wait "$sleeper" || exit 0
+            sleeper=""
+
+            printf '[PDF diff] %s\n' "$message" >&2
+        done
+    ) &
+
+    HEARTBEAT_PID=$!
+}
+
+stop_heartbeat() {
+    if [[ -n "$HEARTBEAT_PID" ]]; then
+        kill "$HEARTBEAT_PID" 2>/dev/null || true
+        wait "$HEARTBEAT_PID" 2>/dev/null || true
+        HEARTBEAT_PID=""
+    fi
+}
+
+cleanup() {
+    local status=$?
+    local pid
+
+    trap - EXIT INT TERM
+
+    stop_heartbeat
+
+    for pid in "${RENDER_PIDS[@]}"; do
+        kill "$pid" 2>/dev/null || true
+    done
+
+    for pid in "${RENDER_PIDS[@]}"; do
+        wait "$pid" 2>/dev/null || true
+    done
+
+    rm -rf -- "$TMP_ROOT"
+
+    if [[ "$status" -ne 0 ]]; then
+        printf '[PDF diff] Работа прервана. Проверьте сообщения об ошибках выше.\n' >&2
+    fi
+
+    exit "$status"
+}
+
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+mkdir -p "$TMP_ROOT/magick-cache"
+
+export MAGICK_TEMPORARY_PATH="$TMP_ROOT/magick-cache"
+export PDF_DIFF_THRESHOLD="$DIFF_THRESHOLD"
+export PDF_DIFF_DILATE="$DILATE_KERNEL"
+export PDF_DIFF_PNG_LEVEL="$PNG_LEVEL"
+export PDF_DIFF_INPUT_DPI="$DPI"
+export PDF_DIFF_OUTPUT_DPI="$OUTPUT_DPI"
+export PDF_DIFF_RESIZE_PERCENT="$RESIZE_PERCENT"
+
+# Переименование представляется как удаление и добавление.
+# Нулевые разделители сохраняют корректность необычных путей.
+git diff --cached --no-renames --name-only \
+    --diff-filter=D -z > "$TMP_ROOT/deleted.list"
+
+git diff --cached --no-renames --name-only \
+    --diff-filter=ACM -z > "$TMP_ROOT/staged.list"
+
+while IFS= read -r -d '' DEL_FILE; do
+    case "$DEL_FILE" in
+        *_diff.pdf) continue ;;
+        *.pdf) ;;
+        *) continue ;;
+    esac
+
     DIFF_FILE="${DEL_FILE%.pdf}_diff.pdf"
-    if [ -f "$DIFF_FILE" ] || git ls-tree -r HEAD --name-only | grep -qx "$DIFF_FILE"; then
-        git rm -f --ignore-unmatch "$DIFF_FILE" >/dev/null 2>&1 || rm -f "$DIFF_FILE"
+
+    if git ls-files --error-unmatch -- "$DIFF_FILE" \
+        >/dev/null 2>&1; then
+
+        log "Удаление diff для удалённого документа: $DIFF_FILE"
+        git rm -f -- "$DIFF_FILE"
+
+    elif [[ -f "$DIFF_FILE" ]]; then
+        log "Удаление diff для удалённого документа: $DIFF_FILE"
+        rm -f -- "$DIFF_FILE"
     fi
-done
+done < "$TMP_ROOT/deleted.list"
 
-STAGED_PDFS=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.pdf$' | grep -v '_diff\.pdf$' || true)
+STAGED_PDFS=()
 
-if [ -z "$STAGED_PDFS" ]; then
+while IFS= read -r -d '' PDF_FILE; do
+    case "$PDF_FILE" in
+        *_diff.pdf) continue ;;
+        *.pdf) STAGED_PDFS+=("$PDF_FILE") ;;
+    esac
+done < "$TMP_ROOT/staged.list"
+
+if [[ ${#STAGED_PDFS[@]} -eq 0 ]]; then
     exit 0
 fi
-
-TMP_ROOT=$(mktemp -d)
-
-# ВРЕМЕННО: сохраняем папку для отладки. Верните обычный trap после отладки.
-# trap 'rm -rf "$TMP_ROOT"' EXIT
-trap 'echo "DEBUG DIR: $TMP_ROOT"' EXIT
-
-DPI=300
 
 get_pdf_content() {
     local rev_spec="$1"
     local file_path="$2"
     local out_file="$3"
+    local first_line=""
 
-    git cat-file --filters --path="$file_path" "$rev_spec" > "$out_file" 2>/dev/null || \
-    git show "$rev_spec" > "$out_file"
+    if ! git cat-file --filters --path="$file_path" \
+        "$rev_spec" > "$out_file"; then
+        git show "$rev_spec" > "$out_file"
+    fi
 
-    if head -n 2 "$out_file" | grep -q "^version https://git-lfs"; then
-        local lfs_tmp="${out_file}.lfs"
-        mv "$out_file" "$lfs_tmp"
-        git lfs smudge < "$lfs_tmp" > "$out_file"
-        rm -f "$lfs_tmp"
+    IFS= read -r first_line < "$out_file" || true
+
+    if [[ "$first_line" == \
+        "version https://git-lfs.github.com/spec/v1"* ]]; then
+
+        if ! git lfs version >/dev/null 2>&1; then
+            printf '[PDF diff] Ошибка: требуется Git LFS для %s\n' \
+                "$file_path" >&2
+            return 1
+        fi
+
+        mv -- "$out_file" "${out_file}.pointer"
+
+        GIT_LFS_SKIP_SMUDGE=0 git lfs smudge -- "$file_path" \
+            < "${out_file}.pointer" > "$out_file"
+
+        rm -f -- "${out_file}.pointer"
+
+        first_line=""
+        IFS= read -r first_line < "$out_file" || true
+
+        if [[ "$first_line" == \
+            "version https://git-lfs.github.com/spec/v1"* ]]; then
+            printf '[PDF diff] Ошибка: Git LFS не вернул PDF для %s\n' \
+                "$file_path" >&2
+            return 1
+        fi
     fi
 }
 
@@ -66,70 +259,96 @@ process_page() {
     local TMP_DIR="$4"
     local IDX="$5"
 
-    export MAGICK_THREAD_LIMIT=1
-    export OMP_NUM_THREADS=1
+    local PAGE_NUMBER=$((10#$IDX + 1))
+    local THRESHOLD="$PDF_DIFF_THRESHOLD"
+    local KERNEL="$PDF_DIFF_DILATE"
+    local COMPRESSION="$PDF_DIFF_PNG_LEVEL"
 
-    local COLOR_ADDED="#ff0000"
-    local COLOR_REMOVED="#0000ff"
+    local -a RESIZE_ARGS=()
 
-    # Разница яркости более 1 процента считается изменением.
-    local THRESHOLD="0.01"
+    if (( PDF_DIFF_OUTPUT_DPI < PDF_DIFF_INPUT_DPI )); then
+        RESIZE_ARGS=(
+            -filter Lanczos
+            -resize "${PDF_DIFF_RESIZE_PERCENT}%"
+        )
+    fi
 
-    # Расширение выделения на один пиксель.
-    local DILATE_KERNEL="Disk:1"
+    if [[ -z "$OLD_PAGE" && -z "$NEW_PAGE" ]]; then
+        printf '[PDF diff] Ошибка: отсутствуют обе версии страницы %s.\n' \
+            "$PAGE_NUMBER" >&2
+        return 1
+    fi
+
+    # При сборке эта страница будет взята из исходного PDF.
+    if [[ -n "$OLD_PAGE" && -n "$NEW_PAGE" ]] &&
+        cmp -s -- "$OLD_PAGE" "$NEW_PAGE"; then
+
+        printf '%s\n' "original" > "${OUT_PAGE}.original"
+        rm -f -- "$OLD_PAGE" "$NEW_PAGE"
+
+        printf '[PDF diff] Страница %s/%s готова, без изменений.\n' \
+            "$PAGE_NUMBER" "$PDF_DIFF_TOTAL_PAGES"
+
+        return 0
+    fi
+
+    printf '[PDF diff] Страница %s/%s: построение цветного выделения.\n' \
+        "$PAGE_NUMBER" "$PDF_DIFF_TOTAL_PAGES"
 
     local PAGE_DIR="$TMP_DIR/page_${IDX}"
     mkdir -p "$PAGE_DIR"
 
-    local OLD_RGB="$PAGE_DIR/old_rgb.png"
-    local NEW_RGB="$PAGE_DIR/new_rgb.png"
-    local OLD_GRAY="$PAGE_DIR/old_gray.png"
-    local NEW_GRAY="$PAGE_DIR/new_gray.png"
-    local BASE_TMP="$PAGE_DIR/base.png"
-    local ADDED_MASK="$PAGE_DIR/added_mask.png"
-    local REMOVED_MASK="$PAGE_DIR/removed_mask.png"
-    local ADDED_LAYER="$PAGE_DIR/added_layer.png"
-    local REMOVED_LAYER="$PAGE_DIR/removed_layer.png"
+    local OLD_RGB="$PAGE_DIR/old_rgb.miff"
+    local NEW_RGB="$PAGE_DIR/new_rgb.miff"
+    local OLD_GRAY="$PAGE_DIR/old_gray.miff"
+    local NEW_GRAY="$PAGE_DIR/new_gray.miff"
+    local BASE="$PAGE_DIR/base.miff"
+    local ADDED_MASK="$PAGE_DIR/added_mask.miff"
+    local REMOVED_MASK="$PAGE_DIR/removed_mask.miff"
+    local ADDED_LAYER="$PAGE_DIR/added_layer.miff"
+    local REMOVED_LAYER="$PAGE_DIR/removed_layer.miff"
 
-    local OLD_W=0
-    local OLD_H=0
-    local NEW_W=0
-    local NEW_H=0
-
-    if [[ -z "$OLD_PAGE" && -z "$NEW_PAGE" ]]; then
-        echo "Ошибка: обе страницы отсутствуют." >&2
-        return 1
-    fi
+    local OLD_W=0 OLD_H=0 NEW_W=0 NEW_H=0
+    local dimensions=""
 
     if [[ -n "$OLD_PAGE" ]]; then
-        read -r OLD_W OLD_H < <(
-            magick identify -ping -format '%w %h\n' "$OLD_PAGE"
-        )
+        if ! dimensions="$(
+            magick identify -ping -format '%w %h' "$OLD_PAGE"
+        )"; then
+            printf '[PDF diff] Ошибка чтения старой страницы %s.\n' \
+                "$PAGE_NUMBER" >&2
+            return 1
+        fi
+        read -r OLD_W OLD_H <<< "$dimensions"
     fi
 
     if [[ -n "$NEW_PAGE" ]]; then
-        read -r NEW_W NEW_H < <(
-            magick identify -ping -format '%w %h\n' "$NEW_PAGE"
-        )
+        if ! dimensions="$(
+            magick identify -ping -format '%w %h' "$NEW_PAGE"
+        )"; then
+            printf '[PDF diff] Ошибка чтения новой страницы %s.\n' \
+                "$PAGE_NUMBER" >&2
+            return 1
+        fi
+        read -r NEW_W NEW_H <<< "$dimensions"
     fi
 
     local WIDTH=$(( OLD_W > NEW_W ? OLD_W : NEW_W ))
     local HEIGHT=$(( OLD_H > NEW_H ? OLD_H : NEW_H ))
     local SIZE="${WIDTH}x${HEIGHT}"
 
-    # Приводим страницы к одному размеру без масштабирования.
-    # Отсутствующую страницу заменяем белой.
+    # Дополняем белыми полями, сохраняя исходный масштаб.
     if [[ -n "$OLD_PAGE" ]]; then
         magick "$OLD_PAGE" \
             -colorspace sRGB \
             -background white -alpha remove -alpha off \
             -gravity northwest -extent "$SIZE" \
             -type TrueColor -depth 8 \
-            "PNG24:$OLD_RGB"
+            -compress None "$OLD_RGB"
     else
         magick -size "$SIZE" xc:white \
-            -colorspace sRGB -type TrueColor \
-            "PNG24:$OLD_RGB"
+            -colorspace sRGB -type TrueColor -depth 8 \
+            -compress None "$OLD_RGB"
     fi
 
     if [[ -n "$NEW_PAGE" ]]; then
@@ -138,125 +357,309 @@ process_page() {
             -background white -alpha remove -alpha off \
             -gravity northwest -extent "$SIZE" \
             -type TrueColor -depth 8 \
-            "PNG24:$NEW_RGB"
+            -compress None "$NEW_RGB"
     else
         magick -size "$SIZE" xc:white \
-            -colorspace sRGB -type TrueColor \
-            "PNG24:$NEW_RGB"
+            -colorspace sRGB -type TrueColor -depth 8 \
+            -compress None "$NEW_RGB"
     fi
 
     magick "$OLD_RGB" \
-        -colorspace Gray -alpha off \
-        "$OLD_GRAY"
+        -colorspace Gray -alpha off -depth 8 \
+        -compress None "$OLD_GRAY"
 
     magick "$NEW_RGB" \
-        -colorspace Gray -alpha off \
-        "$NEW_GRAY"
+        -colorspace Gray -alpha off -depth 8 \
+        -compress None "$NEW_GRAY"
 
-    # Новая страница служит подложкой.
-    # Для удалённой страницы используем старую.
-    local BASE_SOURCE="$NEW_RGB"
+    local BASE_SOURCE="$NEW_GRAY"
+
     if [[ -z "$NEW_PAGE" ]]; then
-        BASE_SOURCE="$OLD_RGB"
+        BASE_SOURCE="$OLD_GRAY"
     fi
 
-    # Осветляем линии, сохраняя белый фон.
+    # Осветление применяется только к растровым страницам diff.
     magick "$BASE_SOURCE" \
-        -colorspace Gray \
         -colorspace sRGB -type TrueColor \
-        -fill white -colorize 55% \
-        "PNG24:$BASE_TMP"
+        -fill white -colorize 55% -depth 8 \
+        -compress None "$BASE"
 
-    # u = старая страница, v = новая страница.
-    # Добавление тёмного штриха уменьшает яркость.
+    # Добавления тёмных линий.
     magick "$OLD_GRAY" "$NEW_GRAY" \
-        -fx "u-v > $THRESHOLD ? 1 : 0" \
         -alpha off \
-        -morphology Dilate "$DILATE_KERNEL" \
-        "$ADDED_MASK"
+        -define compose:clamp=true \
+        -compose MinusSrc -composite \
+        -threshold "$THRESHOLD" \
+        -morphology Dilate "$KERNEL" \
+        -depth 8 -compress None "$ADDED_MASK"
 
-    # Удаление тёмного штриха увеличивает яркость.
-    magick "$OLD_GRAY" "$NEW_GRAY" \
-        -fx "v-u > $THRESHOLD ? 1 : 0" \
+    # Удаления тёмных линий.
+    magick "$NEW_GRAY" "$OLD_GRAY" \
         -alpha off \
-        -morphology Dilate "$DILATE_KERNEL" \
-        "$REMOVED_MASK"
+        -define compose:clamp=true \
+        -compose MinusSrc -composite \
+        -threshold "$THRESHOLD" \
+        -morphology Dilate "$KERNEL" \
+        -depth 8 -compress None "$REMOVED_MASK"
 
-    # Создаём цветной холст независимо от цветового пространства маски.
-    # CopyOpacity переносит яркость маски в прозрачность холста.
-    magick -size "$SIZE" "xc:$COLOR_ADDED" \
+    # Создаём RGB-холсты независимо от цветового пространства масок.
+    magick -size "$SIZE" xc:red \
         -colorspace sRGB -type TrueColor \
         \( "$ADDED_MASK" -alpha off \) \
         -compose CopyOpacity -composite \
-        -depth 8 \
-        "PNG32:$ADDED_LAYER"
+        -depth 8 -compress None "$ADDED_LAYER"
 
-    magick -size "$SIZE" "xc:$COLOR_REMOVED" \
+    magick -size "$SIZE" xc:blue \
         -colorspace sRGB -type TrueColor \
         \( "$REMOVED_MASK" -alpha off \) \
         -compose CopyOpacity -composite \
-        -depth 8 \
-        "PNG32:$REMOVED_LAYER"
+        -depth 8 -compress None "$REMOVED_LAYER"
 
-    # Цветная подложка и принудительный RGB-вывод не дают
-    # сохранить результат как изображение в оттенках серого.
-    magick "$BASE_TMP" \
+    # Необязательное уменьшение выполняется после выделения.
+    magick "$BASE" \
         -colorspace sRGB -type TrueColor \
         "$ADDED_LAYER" -compose Over -composite \
         "$REMOVED_LAYER" -compose Over -composite \
         -background white -alpha remove -alpha off \
+        "${RESIZE_ARGS[@]}" \
         -type TrueColor -depth 8 \
+        -define png:compression-level="$COMPRESSION" \
         "PNG24:$OUT_PAGE"
+
+    rm -rf -- "$PAGE_DIR"
+
+    if [[ -n "$OLD_PAGE" ]]; then
+        rm -f -- "$OLD_PAGE"
+    fi
+
+    if [[ -n "$NEW_PAGE" ]]; then
+        rm -f -- "$NEW_PAGE"
+    fi
+
+    printf '[PDF diff] Страница %s/%s готова, цветное выделение сохранено.\n' \
+        "$PAGE_NUMBER" "$PDF_DIFF_TOTAL_PAGES"
 }
 
 export -f process_page
 
-for PDF_FILE in $STAGED_PDFS; do
+FILE_INDEX=0
+FILE_COUNT=${#STAGED_PDFS[@]}
+
+for PDF_FILE in "${STAGED_PDFS[@]}"; do
+    FILE_INDEX=$((FILE_INDEX + 1))
+
     DIFF_PDF="${PDF_FILE%.pdf}_diff.pdf"
+    WORK_DIR="$TMP_ROOT/work_${FILE_INDEX}"
 
-    WORK_DIR="$TMP_ROOT/work"
-    rm -rf "$WORK_DIR"
-    mkdir -p "$WORK_DIR/old_pages" "$WORK_DIR/new_pages" "$WORK_DIR/diff_pages" "$WORK_DIR/tmp_masks"
+    mkdir -p \
+        "$WORK_DIR/old_pages" \
+        "$WORK_DIR/new_pages" \
+        "$WORK_DIR/diff_pages" \
+        "$WORK_DIR/tmp_masks"
 
-    if git ls-tree -r HEAD --name-only | grep -qx "$PDF_FILE"; then
-        get_pdf_content "HEAD:$PDF_FILE" "$PDF_FILE" "$WORK_DIR/old.pdf"
-        pdftoppm -png -r $DPI "$WORK_DIR/old.pdf" "$WORK_DIR/old_pages/p"
+    log "Документ $FILE_INDEX/$FILE_COUNT: $PDF_FILE"
+    log "Получение старой и подготовленной к коммиту версии PDF."
+
+    start_heartbeat "Получение PDF из Git продолжается."
+
+    OLD_EXISTS=0
+
+    if [[ "$HAS_HEAD" -eq 1 ]] &&
+        git cat-file -e "HEAD:$PDF_FILE" 2>/dev/null; then
+
+        get_pdf_content \
+            "HEAD:$PDF_FILE" "$PDF_FILE" "$WORK_DIR/old.pdf"
+
+        OLD_EXISTS=1
     fi
 
-    get_pdf_content ":$PDF_FILE" "$PDF_FILE" "$WORK_DIR/new.pdf"
-    pdftoppm -png -r $DPI "$WORK_DIR/new.pdf" "$WORK_DIR/new_pages/p"
+    get_pdf_content \
+        ":$PDF_FILE" "$PDF_FILE" "$WORK_DIR/new.pdf"
 
-    mapfile -t OLD_PAGES < <(find "$WORK_DIR/old_pages" -type f -name 'p-*.png' | sort -V)
-    mapfile -t NEW_PAGES < <(find "$WORK_DIR/new_pages" -type f -name 'p-*.png' | sort -V)
+    stop_heartbeat
+
+    log "Растеризация страниц при $DPI DPI."
+    start_heartbeat "Растеризация страниц продолжается."
+
+    if [[ "$OLD_EXISTS" -eq 1 && "$RENDER_JOBS" -eq 2 ]]; then
+        pdftocairo -png -r "$DPI" \
+            "$WORK_DIR/old.pdf" "$WORK_DIR/old_pages/p" &
+        OLD_RENDER_PID=$!
+        RENDER_PIDS=("$OLD_RENDER_PID")
+
+        pdftocairo -png -r "$DPI" \
+            "$WORK_DIR/new.pdf" "$WORK_DIR/new_pages/p" &
+        NEW_RENDER_PID=$!
+        RENDER_PIDS+=("$NEW_RENDER_PID")
+
+        RENDER_FAILED=0
+
+        if ! wait "$OLD_RENDER_PID"; then
+            RENDER_FAILED=1
+        fi
+
+        RENDER_PIDS=("$NEW_RENDER_PID")
+
+        if ! wait "$NEW_RENDER_PID"; then
+            RENDER_FAILED=1
+        fi
+
+        RENDER_PIDS=()
+
+        if [[ "$RENDER_FAILED" -ne 0 ]]; then
+            die "Не удалось растеризовать PDF."
+        fi
+    else
+        if [[ "$OLD_EXISTS" -eq 1 ]]; then
+            pdftocairo -png -r "$DPI" \
+                "$WORK_DIR/old.pdf" "$WORK_DIR/old_pages/p"
+        fi
+
+        pdftocairo -png -r "$DPI" \
+            "$WORK_DIR/new.pdf" "$WORK_DIR/new_pages/p"
+    fi
+
+    stop_heartbeat
+
+    find "$WORK_DIR/old_pages" -type f -name 'p-*.png' \
+        -print0 | sort -zV > "$WORK_DIR/old.list"
+
+    find "$WORK_DIR/new_pages" -type f -name 'p-*.png' \
+        -print0 | sort -zV > "$WORK_DIR/new.list"
+
+    OLD_PAGES=()
+    NEW_PAGES=()
+
+    while IFS= read -r -d '' PAGE; do
+        OLD_PAGES+=("$PAGE")
+    done < "$WORK_DIR/old.list"
+
+    while IFS= read -r -d '' PAGE; do
+        NEW_PAGES+=("$PAGE")
+    done < "$WORK_DIR/new.list"
 
     OLD_COUNT=${#OLD_PAGES[@]}
     NEW_COUNT=${#NEW_PAGES[@]}
-
     MAX_PAGES=$(( OLD_COUNT > NEW_COUNT ? OLD_COUNT : NEW_COUNT ))
 
-    if [ "$MAX_PAGES" -eq 0 ]; then
-        continue
+    [[ "$NEW_COUNT" -gt 0 ]] ||
+        die "Не получены страницы нового PDF: $PDF_FILE"
+
+    if [[ "$OLD_EXISTS" -eq 1 && "$OLD_COUNT" -eq 0 ]]; then
+        die "Не получены страницы старого PDF: $PDF_FILE"
     fi
 
-    echo "Генерация diff для $PDF_FILE (страниц: $MAX_PAGES, было: $OLD_COUNT, стало: $NEW_COUNT)..."
+    export PDF_DIFF_TOTAL_PAGES="$MAX_PAGES"
 
-    for (( idx=0; idx<MAX_PAGES; idx++ )); do
+    log "Сравнение страниц. Было $OLD_COUNT, стало $NEW_COUNT."
+    start_heartbeat "Обработка страниц продолжается."
+
+    for ((idx=0; idx<MAX_PAGES; idx++)); do
         OLD_PAGE="${OLD_PAGES[idx]:-}"
         NEW_PAGE="${NEW_PAGES[idx]:-}"
+        printf -v PAD_INDEX '%05d' "$idx"
 
-        PAD_INDEX=$(printf "%05d" "$idx")
         OUT_PAGE="$WORK_DIR/diff_pages/diff-${PAD_INDEX}.png"
 
-        printf "%s\0%s\0%s\0%s\0%s\0" "$OLD_PAGE" "$NEW_PAGE" "$OUT_PAGE" "$WORK_DIR/tmp_masks" "$PAD_INDEX"
-    done | parallel --will-cite --null -N 5 --halt now,fail=1 process_page
+        printf '%s\0%s\0%s\0%s\0%s\0' \
+            "$OLD_PAGE" \
+            "$NEW_PAGE" \
+            "$OUT_PAGE" \
+            "$WORK_DIR/tmp_masks" \
+            "$PAD_INDEX"
+    done | parallel \
+        --will-cite \
+        --line-buffer \
+        --jobs "$JOBS" \
+        --null -N 5 \
+        --halt now,fail=1 \
+        process_page
 
-    mapfile -t DIFF_RESULTS < <(find "$WORK_DIR/diff_pages" -type f -name 'diff-*.png' | sort -V)
+    stop_heartbeat
 
-    if [ ${#DIFF_RESULTS[@]} -eq "$MAX_PAGES" ]; then
-        img2pdf "${DIFF_RESULTS[@]}" -o "$DIFF_PDF"
-        git add "$DIFF_PDF"
-    else
-        echo "Ошибка: количество сформированных страниц не совпадает с ожидаемым." >&2
-        exit 1
+    CHANGED_IMAGES=()
+    ORIGINAL_COUNT=0
+
+    for ((idx=0; idx<MAX_PAGES; idx++)); do
+        printf -v PAD_INDEX '%05d' "$idx"
+        OUT_PAGE="$WORK_DIR/diff_pages/diff-${PAD_INDEX}.png"
+
+        if [[ -f "${OUT_PAGE}.original" ]]; then
+            [[ "$idx" -lt "$NEW_COUNT" ]] ||
+                die "Нет исходной страницы для позиции $((idx + 1))."
+
+            [[ ! -f "$OUT_PAGE" ]] ||
+                die "Неоднозначный результат для страницы $((idx + 1))."
+
+            ORIGINAL_COUNT=$((ORIGINAL_COUNT + 1))
+
+        elif [[ -s "$OUT_PAGE" ]]; then
+            CHANGED_IMAGES+=("$OUT_PAGE")
+
+        else
+            die "Отсутствует результат для страницы $((idx + 1))."
+        fi
+    done
+
+    CHANGED_COUNT=${#CHANGED_IMAGES[@]}
+
+    log "Сборка PDF. Исходных страниц $ORIGINAL_COUNT, страниц diff $CHANGED_COUNT."
+    start_heartbeat "Сборка итогового PDF продолжается."
+
+    if [[ "$CHANGED_COUNT" -gt 0 ]]; then
+        img2pdf \
+            --imgsize "${OUTPUT_DPI}dpi" \
+            -o "$WORK_DIR/changed.pdf" \
+            "${CHANGED_IMAGES[@]}"
     fi
+
+    # Собираем страницы в исходном порядке.
+    QPDF_PAGES=()
+    CHANGED_INDEX=0
+
+    for ((idx=0; idx<MAX_PAGES; idx++)); do
+        printf -v PAD_INDEX '%05d' "$idx"
+        OUT_PAGE="$WORK_DIR/diff_pages/diff-${PAD_INDEX}.png"
+
+        if [[ -f "${OUT_PAGE}.original" ]]; then
+            QPDF_PAGES+=(
+                "$WORK_DIR/new.pdf"
+                "$((idx + 1))"
+            )
+        else
+            CHANGED_INDEX=$((CHANGED_INDEX + 1))
+
+            QPDF_PAGES+=(
+                "$WORK_DIR/changed.pdf"
+                "$CHANGED_INDEX"
+            )
+        fi
+    done
+
+    # Создаётся отдельный обзорный документ.
+    # Документные закладки и метаданные целиком не переносятся.
+    qpdf \
+        --empty \
+        --object-streams=generate \
+        --pages "${QPDF_PAGES[@]}" -- \
+        "$WORK_DIR/result.pdf"
+
+    RESULT_COUNT="$(qpdf --show-npages "$WORK_DIR/result.pdf")"
+
+    [[ "$RESULT_COUNT" -eq "$MAX_PAGES" ]] ||
+        die "Количество страниц собранного PDF неверно."
+
+    stop_heartbeat
+
+    log "Сохранение $DIFF_PDF и добавление в индекс Git."
+    start_heartbeat "Сохранение результата и добавление в Git продолжается."
+
+    mv -f -- "$WORK_DIR/result.pdf" "$DIFF_PDF"
+    git add -- "$DIFF_PDF"
+
+    stop_heartbeat
+
+    rm -rf -- "$WORK_DIR"
+
+    log "Готово: $DIFF_PDF"
 done
