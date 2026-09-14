@@ -1,82 +1,80 @@
 Language / Язык: [Английский](README.md) | **Русский**
 
-Language / Язык: [Russian](README.ru.md) | **English**
-
 # pdf-schematic-visual-diff
 
-An automated Git hook (`pre-commit`) for visual quality control of changes in PDF schematics and blueprints, designed specifically for hardware development repositories (CAD/EDA) with **Git LFS** support.
+Автоматический Git-хук (`pre-commit`) для визуального контроля изменений в PDF-схемах и чертежах, разработанный специально для репозиториев электронной разработки (CAD/EDA) с поддержкой **Git LFS**.
 
-> ⚡ **When the hook triggers:** The script executes automatically **at the moment of running `git commit`**. It intercepts staged PDF files, extracts and processes data from the Git LFS storage on the fly, performs a pixel-by-pixel analysis of current page versions against the previous commit (`HEAD`), generates a clear visual report named `[name]_diff.pdf`, and **automatically appends it to the current commit**.
-
----
-
-## ✨ Blueprint Color Coding Logic
-
-The algorithm operates at a low level by comparing pixel brightness via vector channel subtraction (`-compose MinusSrc`), which allows it to accurately detect structural changes in CAD schematics:
-
-- **Component Removal**: All removed symbols/components are highlighted in **blue**.
-- **Component Addition or RefDes Change**: Highlighted in **red**.
-- **Component Movement**: The old position of the component on the schematic turns **blue**, while the new position turns **red**.
+> ⚡ **Когда отрабатывает хук:** Скрипт автоматически запускается **в момент выполнения команды `git commit`**. Он перехватывает проиндексированные (staged) PDF-файлы, на лету извлекает и разворачивает данные из хранилища Git LFS, выполняет попиксельный анализ страниц текущей версии против предыдущего коммита (`HEAD`), формирует наглядный графический отчет `[имя]_diff.pdf` и **автоматически добавляет его в этот же текущий коммит**.
 
 ---
 
-## 🚀 Implementation Features
+## ✨ Логика цветовой маркировки чертежей
 
-- **Full Git LFS Integration**: Automatically detects LFS text pointers in the commit history and safely performs the `smudge` procedure in an isolated workspace.
-- **Anti-Aliasing Resilience**: Hardware-accelerated matrix operations paired with morphological expansion (`Dilate Disk:1`) capture micro-shifts in 1-pixel thick vector lines, preventing false negatives.
-- **High Performance**: Page rendering and pixel processing are completely parallelized using `GNU Parallel` paired with multi-threaded `pdftocairo` batch processing. Internal execution boundaries are set to prevent CPU core thrashing.
+Алгоритм работает на низком уровне поканального векторного вычитания яркости пикселей (`-compose MinusSrc`), что позволяет безошибочно вычислять изменения геометрии CAD-схем с учётом заданного порога чувствительности:
+
+- **Удаление компонента**: Все исчезнувшие УГО выделяются **синим цветом**.
+- **Добавление компонента или Изменение RefDes**: Выделяются **красным цветом**.
+- **Перемещение компонента**: Старое положение компонента на схеме окрашивается в **синий цвет**, новое положение — в **красный цвет**.
 
 ---
 
-## 🔧 Configuring ImageMagick Resource Limits
+## 🚀 Особенности реализации
 
-For processing large CAD documents (such as A1 or A0 blueprints at 300 DPI), the default ImageMagick security parameters might be insufficient, throwing `Image width exceeds user limit` warnings or drastically slowing down due to hard drive cache thrashing. 
+- **Полная интеграция с Git LFS**: Автоматически распознает текстовые указатели LFS (LFS pointers) in истории коммитов и безопасно выполняет процедуру `smudge` в изолированном пространстве.
+- **Устойчивость к антиалиасингу**: Скоростные матричные операции ImageMagick в связке с морфологическим расширением (`Dilate Disk:1`) улавливают микросдвиги векторных линий толщиной в 1 пиксель, предотвращая ложные пропуски изменений.
+- **Максимальное распараллеливание**: Процесс рендеринга страниц полностью разделен на независимые легковесные потоки через `pdftocairo` и распределен по всем ядрам CPU с помощью `GNU Parallel`, исключая перегрузку планировщика потоков.
 
-### Recommended Policy Profiles
+---
 
-Modify your ImageMagick security configuration file (usually located at `/etc/ImageMagick-7/policy.xml` or `/etc/ImageMagick-6/policy.xml`). 
+## 🔧 Настройка ресурсных ограничений ImageMagick
 
-Add or update the following parameters inside the `<policymap>` tags right before the closing `</policymap>` element:
+Для обработки крупных инженерных документов (чертежи формата А1, А0 при разрешении 300 DPI) стандартных лимитов безопасности ImageMagick в системе часто не хватает. Это приводит к ошибкам `Image width exceeds user limit` или жесткому падению скорости из-за кэширования графики на жесткий диск.
+
+### Рекомендуемый профиль политик безопасности
+
+Внесите изменения в конфигурационный файл политик ImageMagick (обычно расположен по пути `/etc/ImageMagick-7/policy.xml` or `/etc/ImageMagick-6/policy.xml`).
+
+Добавьте или замените существующие директивы внутри тегов `<policymap>` перед закрывающим тегом `</policymap>` следующие строки:
 
 ```xml
 <policymap>
-  <!-- Maximum single image raster boundaries (16384 x 16384 pixels) -->
+  <!-- Максимальные линейные размеры растра одной страницы (16384 x 16384 пикселей) -->
   <policy domain="resource" name="width" value="16KP"/>
   <policy domain="resource" name="height" value="16KP"/>
   
-  <!-- Maximum total frame area in megapixels (128 MP) -->
+  <!-- Максимальная общая площадь кадра в мегапикселях (128 MP) -->
   <policy domain="resource" name="area" value="128MP"/>
   
-  <!-- Memory utilization and memory mapping constraints -->
+  <!-- Ограничения на выделение физической оперативной памяти и маппинга памяти -->
   <policy domain="resource" name="memory" value="2GiB"/>
   <policy domain="resource" name="map" value="4GiB"/>
   
-  <!-- Temporary scratch disk limit if RAM allocation fills up -->
+  <!-- Лимит временного дискового пространства при заполнении выделенной RAM -->
   <policy domain="resource" name="disk" value="8GiB"/>
   
-  <!-- Execution timeout ceiling for a single command process (10 minutes) -->
+  <!-- Потолок времени выполнения одной команды ImageMagick в секундах (10 минут) -->
   <policy domain="resource" name="time" value="600"/>
 </policymap>
 ```
 
-> 📌 **Note:** Although the pre-commit script dynamically attempts to override and isolate these resource environments for its background processes on the fly, manually editing the global system `policy.xml` ensures predictable behavior during individual manual debug sessions.
+> 📌 **Примечание:** Несмотря на то, что сам скрипт хука пытается динамически переопределять и изолировать данные ресурсные лимиты «на лету» для своих подпроцессов, ручная правка глобального файла `policy.xml` гарантирует корректное поведение утилит при ручной отладке отдельных страниц.
 
 ---
 
-## 🛠 Dependencies and Packages
+## 🛠 Зависимости и пакеты
 
-Before installing the hook, make sure the following packages are installed on your system:
+Перед установкой хука убедитесь, что в вашей системе установлены следующие пакеты:
 
-| Script Command | Tool Purpose | OpenSUSE | Debian/Ubuntu/Mint | Fedora/RHEL |
+| Команда в скрипте | Назначение утилиты | OpenSUSE | Debian/Ubuntu/Mint | Fedora/RHEL |
 | :--- | :--- | :--- | :--- | :--- |
-| `git-lfs` | Extracts heavy binary PDFs from LFS storage | `git-lfs` | `git-lfs` | `git-lfs` |
-| `magick` | Accelerated matrix-based image composite operations | `ImageMagick` | `imagemagick` | `ImageMagick` |
-| `pdftocairo` | Renders PDF vectors into crisp raster PNG graphics | `poppler-tools` | `poppler-utils` | `poppler-utils` |
-| `parallel` | Distributes batch page workflows across CPU cores | `parallel` | `parallel` | `parallel` |
-| `qpdf` | Performs quick non-destructive PDF page merging | `qpdf` | `qpdf` | `qpdf` |
-| `img2pdf` | Assembles raster diff layers without re-compression | `python3-img2pdf` | `img2pdf` | `img2pdf` |
+| `git-lfs` | Извлечение тяжелых бинарных PDF из хранилища LFS | `git-lfs` | `git-lfs` | `git-lfs` |
+| `magick` | Высокопроизводительные матричные операции над слоями | `ImageMagick` | `imagemagick` | `ImageMagick` |
+| `pdftocairo` | Рендеринг векторов PDF в четкую растровую графику PNG | `poppler-tools` | `poppler-utils` | `poppler-utils` |
+| `parallel` | Распределение пакетной обработки страниц по ядрам CPU | `parallel` | `parallel` | `parallel` |
+| `qpdf` | Скоростная недеструктивная склейка оригинальных страниц PDF | `qpdf` | `qpdf` | `qpdf` |
+| `img2pdf` | Сборка растровых слоев изменений без пережатия | `python3-img2pdf` | `img2pdf` | `img2pdf` |
 
-### Installation by Distribution
+### Установка по дистрибутивам
 
 **OpenSUSE Tumbleweed / Leap 15.4+:**
 ```bash
@@ -94,7 +92,7 @@ sudo apt install git git-lfs imagemagick poppler-utils parallel qpdf img2pdf
 sudo dnf install git git-lfs ImageMagick poppler-utils parallel qpdf img2pdf
 ```
 
-### ✅ Installation Verification
+### ✅ Проверка установки
 
 ```bash
 for tool in git magick pdftocairo img2pdf parallel qpdf; do
@@ -104,89 +102,68 @@ done
 
 ---
 
-## ⚠️ Important: `magick` (IM 7) vs `convert` (IM 6)
+## ⚠️ Важно: `magick` (IM 7) vs `convert` (IM 6)
 
-The script relies on the **`magick`** command, which is the native interface for **ImageMagick 7**. In most distributions, the package manager installs **ImageMagick 6**, where the same functionality is accessed via the **`convert`** command.
+Скрипт по умолчанию ориентирован на команду **`magick`** (интерфейс ImageMagick 7). Если в вашем дистрибутиве установлен ImageMagick 6, подмените вызовы прямо перед установкой хука:
 
-### If You Have ImageMagick 6
-
-Replace `magick` with `convert` inside the script using this command:
 ```bash
 sed -i 's/\bmagick\b/convert/g' .git/hooks/pre-commit
 ```
 
 ---
 
-## 💻 Repository Configuration & Hook Setup
+## 💻 Настройка репозитория и установка хука
 
-### Step 1. Initialize Git LFS for PDFs and CAD Sources
+### Шаг 1. Инициализация Git LFS для PDF и исходников CAD
 
-Run the following commands in the root of your repository based on your CAD system:
+Выполните в корне репозитория команды отслеживания в зависимости от вашей CAD-системы:
 
-* **For Cadence Allegro / OrCAD Capture:**
-  ```bash
-  git lfs install
-  git lfs track "*.pdf" "*.dsn"
-  git add .gitattributes
-  ```
-
-* **For Altium Designer:**
-  ```bash
-  git lfs install
-  git lfs track "*.pdf" "*.SchDoc"
-  git add .gitattributes
-  ```
-
-* **For KiCad:**
-  ```bash
-  git lfs install
-  git lfs track "*.pdf" "*.kicad_sch"
-  git add .gitattributes
-  ```
+* **Для Cadence Allegro / OrCAD Capture:** `git lfs track "*.pdf" "*.dsn"`
+* **Для Altium Designer:** `git lfs track "*.pdf" "*.SchDoc"`
+* **Для KiCad:** `git lfs track "*.pdf" "*.kicad_sch"`
 
 ---
 
-## 🔧 Troubleshooting
+## 🔧 Устранение неисправностей (Troubleshooting)
 
-### All Pages Marked as "Modified" Though the Schematic Hasn't Changed
+### Все страницы помечены как «изменённые», хотя схема не менялась
 
-This is caused by **differing poppler rendering behavior** between PDF versions or font embedding discrepancies. Check your files using `pdfinfo`:
+Причина — **разный рендеринг шрифтов или геометрии poppler** между версиями PDF. Проверить базовые параметры можно через `pdfinfo`:
 ```bash
 pdfinfo old.pdf | grep -E "Pages|Page size"
 ```
 
-If the page dimensions match but full-page false positives persist, try lowering the sensitivity by increasing the `THRESHOLD` value via environmental variables before running your commit:
+Если размеры совпадают, но различия всё равно детектируются «по всей площади листа» — попробуйте снизить чувствительность, передав переменную `PDF_DIFF_THRESHOLD` перед вызовом коммита:
 ```bash
 export PDF_DIFF_THRESHOLD="2%"
-git commit -m "Commit message"
+git commit -m "Commit text"
 ```
 
-> 💡 **Important when using CUPS-PDF (Linux):**
-> This printer converts all text directly into vector curves (graphical paths). For a visual diff tool, this is the ideal scenario because letter shapes are frozen as geometry, removing any dependency on local system font packages.
+> 💡 **Важно при использовании CUPS-PDF (Linux):**
+> Данный принтер переводит весь текст в векторные кривые (графические линии). Для визуального diff-хука это идеальный сценарий, так как рендеринг геометрии букв становится абсолютно независимым от наличия локальных шрифтовых пакетов.
 >
-> ⚠️ **Critical Limitations:**
-> * Both compared versions must be generated via CUPS-PDF using identical format and scaling settings.
-> * It is highly recommended to maintain the exact same export pipeline, including the host application and Wine. Updating the system driver or Ghostscript can also alter the rendering output.
-> * Comparing results from different virtual printers is unsupported. It may highlight a significant part of the page even if the source schematic has not changed.
-> * The hook compares the purely visual appearance of the pages, not the electrical connections or component semantics. Any visual discrepancy is potentially flagged as a modification.
+> ⚠️ **Критические ограничения:**
+> * Обе сравниваемые версии должны быть получены через CUPS-PDF с одинаковыми настройками формата и масштаба.
+> * Желательно сохранять одну и ту же цепочку экспорта, включая приложение и Wine. Обновление драйвера или Ghostscript тоже может изменить отрисовку.
+> * Сравнение результатов разных виртуальных принтеров не поддерживается. Оно может выделить значительную часть страницы даже без изменений исходной схемы.
+> * Хук сравнивает внешний вид страниц, а не электрические связи или семантику компонентов. Любое визуальное отличие потенциально считается изменением.
 
-### Commit Takes Too Long to Process
+### Слишком долгий рендеринг при коммите
 
-By default, the script renders at `DPI=300`. For large Multi-sheet A1 layouts, this can be heavy. Lower the comparison resolution down to 150 or 200 DPI:
+По умолчанию сравнение идет при `DPI=300`. На многолистовых чертежах А1 расчет может затягиваться. Снизьте DPI сравнения до 150 или 200 единиц:
 ```bash
 export PDF_DIFF_DPI=150
 export PDF_DIFF_OUTPUT_DPI=150
-git commit -m "Commit with faster diff calculation"
+git commit -m "Fast diff calculation"
 ```
 
-
-This resolution remains fully sufficient for tracking components and Reference Designators (RefDes).
+Для подсветки RefDes и компонентов этого достаточно.
 
 ---
 
-## 🐳 CI/Docker Integration
+## 🐳 Использование в CI/Docker
 
-If you run this hook inside a CI/CD environment, you can utilize a pre-built Docker image configuration:
+Если хук запускается в CI-среде, можно использовать готовый Docker-образ:
 
 ```dockerfile
 FROM python:3.12-slim
@@ -195,11 +172,11 @@ RUN apt-get update && apt-get install -y     git git-lfs imagemagick poppler-uti
 
 RUN pip install img2pdf
 
-# Substitute magick with convert for ImageMagick 6 environments
+# Заменяем magick на convert для IM 6
 RUN sed -i 's/\bmagick\b/convert/g' /usr/local/bin/pre-commit-hook
 ```
 
-Example GitLab CI workflow configuration:
+Пример GitLab CI:
 
 ```yaml
 stages:
@@ -218,16 +195,17 @@ visual-diff:
 
 ---
 
-## 🔒 Security and Privacy
+## 🔒 Безопасность и приватность
 
-- **Zero Telemetry.** The script never transmits data to external servers.
-- **NDA Compliant.** Schematics and their corresponding diff reports reside strictly within your repository ecosystem.
+- **Никакой телеметрии.** Скрипт не отправляет данные ни на какие серверы.
+- **Совместимо с NDA.** Схемы и их diff-отчёты остаются в вашем репозитории и никуда не утекают.
+---
 
-## 👥 Authors & AI Contributors
+## 👥 Авторы и ИИ-соавторы
 
-* **awolfman** — *Project Concept, Hook Logic, Bash Implementation, and Hardware CAD/EDA Integration Testing*
+* **awolfman** — *Концепция проекта, логика работы хука, реализация на Bash и тестирование интеграции с аппаратными CAD/EDA-системами.*
 
-* **DeepSeek** — *Optimization of Low-Level FX Math, Linux Package Diagnostics, and Memory Leak (RAM Spikes) Protections*
-* **Claude** — *Parallelization Strategy (GNU Parallel Infrastructure) and Anti-Aliasing Resilience Operations*
-* **ChatGPT** — *CI/CD Integration Architecture, Docker Environment Deployment, and Troubleshooting Resolution Logic*
-* **Gemini (Google AI)** — *Technical Documentation Refinement, English Localization, and Bilingual Layout Structuring*
+* **DeepSeek** — *Оптимизация низкоуровневой FX-математики, диагностика системных пакетов Linux и защита от утечек памяти (RAM Spikes).*
+* **Claude** — *Стратегия распараллеливания задач (инфраструктура GNU Parallel) и обеспечение устойчивости к антиалиасингу.*
+* **ChatGPT** — *Архитектура интеграции с CI/CD, развертывание в Docker-среде и формирование логики устранения неисправностей.*
+* **Gemini (Google AI)** — *Технический аудит документации, локализация на английский язык и структурирование двуязычных файлов.*
