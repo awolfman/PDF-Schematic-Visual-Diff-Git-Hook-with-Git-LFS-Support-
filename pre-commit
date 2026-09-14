@@ -9,7 +9,7 @@ export OMP_NUM_THREADS=1
 for req_tool in git magick pdftoppm img2pdf parallel; do
     if ! command -v "$req_tool" >/dev/null 2>&1; then
         echo "Ошибка: утилита '$req_tool' не установлена в системе." >&2
-        echo "Для OpenSUSE выполните: sudo zypper install poppler-tools ImageMagick python3-img2pdf parallel" >&2
+        echo "Для OpenSUSE выполните: sudo zypper install poppler-tools ImageMagick python3-img2pdf gnu_parallel" >&2
         exit 1
     fi
 done
