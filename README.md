@@ -96,7 +96,7 @@ sudo dnf install git git-lfs ImageMagick poppler-utils parallel qpdf img2pdf
 
 ```bash
 for tool in git magick pdftocairo img2pdf parallel qpdf; do
-    command -v "\$tool" >/dev/null 2>&1 && echo "OK: tool" || echo "MISSING: tool"
+    command -v "$tool" >/dev/null 2>&1 && echo "OK: tool" || echo "MISSING: tool"
 done
 ```
 
@@ -159,10 +159,14 @@ export PDF_DIFF_THRESHOLD="2%"
 git commit -m "Commit message"
 ```
 
-> 💡 **Important when using Virtual Printers (doPDF, CUPS-PDF, etc.):**
-> Different printer drivers handle embedded typography differently, which directly impacts pixel-by-pixel comparisons:
-> * **When exporting via doPDF (Windows):** You **must check the "Embed fonts" option** in the printer properties before generating the document. If fonts are omitted, the Linux `pdftocairo` utility will fall back to standard fonts (like Arial), causing slight character shifts and triggering full-page false positives.
-> * **When exporting via CUPS-PDF (Linux):** This driver typically converts all text blocks directly into vector curves (graphical paths). For a visual diff tool, this is the **ideal scenario** because letter shapes are frozen as geometry, removing any dependency on local system font packages.
+> 💡 **Important when using CUPS-PDF (Linux):**
+> This printer converts all text directly into vector curves (graphical paths). For a visual diff tool, this is the ideal scenario because letter shapes are frozen as geometry, removing any dependency on local system font packages.
+>
+> ⚠️ **Critical Limitations:**
+> * Both compared versions must be generated via CUPS-PDF using identical format and scaling settings.
+> * It is highly recommended to maintain the exact same export pipeline, including the host application and Wine. Updating the system driver or Ghostscript can also alter the rendering output.
+> * Comparing results from different virtual printers is unsupported. It may highlight a significant part of the page even if the source schematic has not changed.
+> * The hook compares the purely visual appearance of the pages, not the electrical connections or component semantics. Any visual discrepancy is potentially flagged as a modification.
 
 ### Commit Takes Too Long to Process
 
@@ -185,9 +189,7 @@ If you run this hook inside a CI/CD environment, you can utilize a pre-built Doc
 ```dockerfile
 FROM python:3.12-slim
 
-RUN apt-get update && apt-get install -y \
-    git git-lfs imagemagick poppler-utils parallel \
-    && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y     git git-lfs imagemagick poppler-utils parallel     && rm -rf /var/lib/apt/lists/*
 
 RUN pip install img2pdf
 
